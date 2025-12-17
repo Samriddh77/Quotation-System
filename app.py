@@ -45,9 +45,9 @@ FIRM_DEFAULTS = {
         "payment": "30% Advance", "validity": "15 Days", "guarantee": "12 Months"
     },
     "Shree Creative Marketing": {
-        "prefix": "SCM/QTN", "price": "Nett", "gst": "Inclusive",
-        "delivery": "Immediate", "freight": "Paid by us",
-        "payment": "COD", "validity": "5 Days", "guarantee": "Standard"
+        "prefix": "SCM/QTN", "price": "Nett", "gst": "18% Extra",
+        "delivery": "Immediate", "freight": "P&F: NIL | F.O.R: Ex Indore",
+        "payment": "30% Advance", "validity": "5 Days", "guarantee": "12 Months"
     }
 }
 
