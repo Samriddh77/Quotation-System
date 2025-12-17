@@ -33,10 +33,10 @@ if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
 
-# --- AUTO-FILL DEFAULTS (Customized per Firm) ---
+# --- AUTO-FILL DEFAULTS ---
 FIRM_DEFAULTS = {
     "Electro World": {
-        "prefix": "EW/QTN",  # Unique Ref Prefix
+        "prefix": "EW/QTN",
         "price": "Nett Ex-Works",
         "gst": "Extra @ 18% as applicable",
         "delivery": "Ex-Stock / 1-2 Weeks",
@@ -69,11 +69,9 @@ FIRM_DEFAULTS = {
 
 # --- STATE MANAGEMENT ---
 def update_defaults():
-    """ Updates Terms AND Reference Number based on selected firm """
     firm = st.session_state.get('firm_selector', "Electro World")
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
     
-    # Update Terms
     st.session_state['p_term'] = defaults['price']
     st.session_state['g_term'] = defaults['gst']
     st.session_state['d_term'] = defaults['delivery']
@@ -82,13 +80,11 @@ def update_defaults():
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
     
-    # Update Reference Number automatically
     date_str = datetime.now().strftime('%y%m%d')
     st.session_state['ref_no_val'] = f"{defaults['prefix']}/{date_str}/001"
 
-# Initialize Session State
 if 'firm_selector' not in st.session_state: st.session_state['firm_selector'] = "Electro World"
-if 'p_term' not in st.session_state: update_defaults() # Run once on load
+if 'p_term' not in st.session_state: update_defaults()
 
 # --- HELPERS ---
 def clean_price_value(val):
@@ -99,18 +95,32 @@ def clean_price_value(val):
     except: return 0.0
 
 def detect_uom(sheet_name, price_col_name):
-    c_up = str(price_col_name).upper()
-    if "MTR" in c_up or "METER" in c_up: return "Mtr"
-    if "PC" in c_up or "PIECE" in c_up: return "Pc"
-    return "Mtr" 
+    """ Robust UOM Detection """
+    text = (str(sheet_name) + " " + str(price_col_name)).upper()
+    
+    # Priority 1: MTR / METER
+    if any(x in text for x in ["MTR", "METER", "LENGTH", "COIL"]): 
+        return "Mtr"
+    
+    # Priority 2: PCS / NOS / SETS
+    if any(x in text for x in ["PC", "PIECE", "NO", "NOS", "SET", "EACH", "UNIT", "FIX"]): 
+        return "Pc"
+    
+    # Default fallback (Safe for Electrical)
+    return "Pc"
+
+def format_qty(qty, uom):
+    """ Formats Qty as Integer for Pieces, Decimal for Meters """
+    uom_clean = str(uom).lower()
+    if any(x in uom_clean for x in ['pc', 'no', 'set', 'each', 'fix']):
+        return f"{int(qty)}"
+    return f"{qty:,.2f}"
 
 # --- WORD GENERATOR UTILS ---
 def set_table_borders(table):
-    """ Force proper grid borders and CELL PADDING using XML """
     tbl = table._tbl
     tblPr = tbl.tblPr
     
-    # 1. Borders
     tblBorders = tblPr.first_child_found_in("w:tblBorders")
     if tblBorders is None:
         tblBorders = OxmlElement('w:tblBorders')
@@ -124,7 +134,6 @@ def set_table_borders(table):
         border.set(qn('w:color'), '000000')
         tblBorders.append(border)
 
-    # 2. Cell Margins (Padding)
     tblCellMar = tblPr.first_child_found_in("w:tblCellMar")
     if tblCellMar is None:
         tblCellMar = OxmlElement('w:tblCellMar')
@@ -143,7 +152,6 @@ def set_table_borders(table):
         tblCellMar.append(node)
 
 def safe_replace_text(doc, replacements):
-    """ Replaces text while trying to preserve formatting """
     for paragraph in doc.paragraphs:
         for key, value in replacements.items():
             if key in paragraph.text:
@@ -182,7 +190,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
 
     safe_replace_text(doc, replacements)
 
-    # Insert Table
     target_paragraph = None
     for paragraph in doc.paragraphs:
         if '{{TABLE_HERE}}' in paragraph.text:
@@ -192,7 +199,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
     if target_paragraph:
         target_paragraph.text = "" 
         
-        # --- COLUMN WIDTH RATIOS (Total ~100) ---
         col_ratios = {
             "S.No.": 5, "Sub Category": 12, "Item Description": 35,
             "Make": 10, "Qty": 8, "Unit": 8, "Rate": 10, "Amount": 12
@@ -201,18 +207,16 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         
         table = doc.add_table(rows=1, cols=len(active_headers))
         
-        # Auto-Fit to Page Width
         table.autofit = False 
         table.allow_autofit = False
         tblPr = table._tbl.tblPr
         tblW = OxmlElement('w:tblW')
-        tblW.set(qn('w:w'), '5000') # 100% width
+        tblW.set(qn('w:w'), '5000') 
         tblW.set(qn('w:type'), 'pct')
         tblPr.append(tblW)
         
         set_table_borders(table)
         
-        # Header Row
         for i, header in enumerate(active_headers):
             cell = table.rows[0].cells[i]
             cell.text = header
@@ -221,7 +225,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             if p.runs: p.runs[0].bold = True
             else: p.add_run(header).bold = True
 
-        # Data Rows
         total_amt = 0
         for i, item in enumerate(cart_items):
             row_cells = table.add_row().cells
@@ -235,13 +238,16 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             make_str = item.get('Make', '').strip()
             if make_str: make_str = f"{make_str} Make"
             
+            # Formatted Data
+            qty_fmt = format_qty(qty, item['Display Unit'])
+            
             data_map = {
                 "S.No.": str(i+1),
                 "Sub Category": item.get('Sub Category', ''),
                 "Item Description": item['Description'],
                 "Make": make_str,
-                "Qty": f"{qty:,.2f}",
-                "Unit": item['Display Unit'].split()[0],
+                "Qty": qty_fmt,
+                "Unit": item['Display Unit'], # Full unit name
                 "Rate": f"{net_rate:,.2f}",
                 "Amount": f"{line_total:,.2f}"
             }
@@ -256,7 +262,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                 else:
                     cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        # Grand Total Row
         if "Amount" in active_headers:
             row = table.add_row().cells
             amt_idx = active_headers.index("Amount")
@@ -347,11 +352,9 @@ with st.sidebar:
         c1, c2 = st.columns(2)
         disc = c1.number_input("Disc %", 0.0, 100.0, 0.0)
         
-        # --- MODIFIED MAKE INPUT ---
-        make = c2.text_input("Make") # Blank label, no default value
+        make = c2.text_input("Make")
         
         if st.button("Add"):
-            # --- VALIDATION LOGIC ---
             if not make.strip():
                 st.error("⚠️ The 'Make' field is mandatory!")
             else:
