@@ -59,13 +59,14 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
     font.name = 'Calibri'
     font.size = Pt(11)
 
-    # --- HEADER IMAGE ---
+    # --- A. HEADER IMAGE ---
     if header_path and os.path.exists(header_path):
         section = doc.sections[0]
         header = section.header
         p = header.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run()
+        # Adjust width to fit page width approx (7.5 inches)
         run.add_picture(header_path, width=Inches(7.5))
     else:
         # Fallback text if image missing
@@ -77,20 +78,21 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
         p.runs[0].bold = True
         p.runs[0].font.size = Pt(16)
 
-    # --- META DATA (Ref / Date) ---
+    # --- B. META DATA (Ref / Date) ---
     table_meta = doc.add_table(rows=1, cols=2)
     table_meta.width = Inches(7.5)
     
-    # Remove borders
-    tbl = table_meta._tbl
-    for cell in tbl.iter_tks():
-        tcPr = cell.tcPr
-        tcBorders = OxmlElement('w:tcBorders')
-        for border in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-            node = OxmlElement(f'w:{border}')
-            node.set(qn('w:val'), 'nil')
-            tcBorders.append(node)
-        tcPr.append(tcBorders)
+    # FIXED: Remove borders using robust Oxml method
+    for row in table_meta.rows:
+        for cell in row.cells:
+            tc = cell._tc
+            tcPr = tc.get_or_add_tcPr()
+            tcBorders = OxmlElement('w:tcBorders')
+            for border in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                node = OxmlElement(f'w:{border}')
+                node.set(qn('w:val'), 'nil')
+                tcBorders.append(node)
+            tcPr.append(tcBorders)
 
     c1 = table_meta.cell(0, 0)
     p = c1.paragraphs[0]
@@ -105,7 +107,7 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
 
     doc.add_paragraph()
 
-    # --- CLIENT ---
+    # --- C. CLIENT ---
     p = doc.add_paragraph()
     p.add_run("To,\n").bold = True
     p.add_run(client_data['client_name']).bold = True
@@ -113,7 +115,7 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
     
     doc.add_paragraph()
 
-    # --- SUBJECT ---
+    # --- D. SUBJECT ---
     p = doc.add_paragraph()
     r = p.add_run(f"Sub: {client_data['subject']}")
     r.bold = True
@@ -122,10 +124,10 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
     p = doc.add_paragraph("Sirs,")
     p = doc.add_paragraph("We acknowledge with thanks the receipt of your above enquiry and are pleased to quote as under:-")
 
-    # --- ANNEXURE HEADING ---
+    # --- E. ANNEXURE HEADING ---
     doc.add_paragraph().add_run("ANNEXURE I : PRICE SCHEDULE").bold = True
     
-    # --- TERMS ---
+    # --- F. TERMS ---
     doc.add_paragraph("Other Terms & Conditions are as under:")
     
     terms_list = [
@@ -150,14 +152,14 @@ def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Ele
 
     doc.add_paragraph()
     
-    # --- CLOSING ---
+    # --- G. CLOSING ---
     p = doc.add_paragraph()
     p.add_run("Thanking You\nYours Faithfully\n")
     p.add_run(f"For {firm_name}").bold = True
     
     doc.add_page_break()
 
-    # --- TABLE ---
+    # --- H. PRICE TABLE ---
     h = doc.add_paragraph()
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     h.add_run("ANNEXURE I: PRICE SCHEDULE").bold = True
@@ -355,21 +357,32 @@ if not st.session_state['cart']:
 else:
     # --- TABLE ---
     st.subheader("1. Item List")
-    data = []
+    
+    # Custom Grid Header
+    h1, h2, h3, h4, h5, h6, h7 = st.columns([0.5, 3.5, 1.5, 1.5, 1.2, 1.5, 0.5])
+    h1.write("#"); h2.write("Desc"); h3.write("Make"); h4.write("Qty"); h5.write("Unit"); h6.write("Total"); 
+    st.divider()
+
     grand_tot = 0
     for i, item in enumerate(st.session_state['cart']):
         net = item['List Price'] * (1 - item['Discount']/100)
         tot = (net * 1.18) * item['Qty']
         grand_tot += tot
-        data.append({
-            "No": i+1, "Desc": item['Description'], "Make": item['Make'], "Remark": item['Remark'],
-            "Qty": item['Qty'], "Unit": item['Display Unit'],
-            "Price": item['List Price'], "Disc": item['Discount'],
-            "Total (Incl GST)": f"{tot:,.0f}"
-        })
-    st.dataframe(pd.DataFrame(data).set_index("No"))
-    st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
+        
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([0.5, 3.5, 1.5, 1.5, 1.2, 1.5, 0.5])
+        c1.write(f"{i+1}")
+        c2.write(item['Description'])
+        c3.write(item['Make'])
+        c4.write(f"{item['Qty']:,.2f}")
+        c5.write(item['Display Unit'].split()[0])
+        c6.write(f"₹ {tot:,.0f}")
+        if c7.button("🗑️", key=f"d{i}"):
+            st.session_state['cart'].pop(i)
+            st.rerun()
+
     st.divider()
+    st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
+    st.markdown("---")
 
     # --- WORD GENERATOR FORM ---
     st.subheader("2. Generate Official Quotation")
@@ -380,7 +393,7 @@ else:
     # Check if header exists
     header_path = os.path.join("headers", FIRM_MAPPING[selected_firm])
     if not os.path.exists(header_path):
-        st.warning(f"⚠️ Image '{header_path}' not found! Using text fallback.")
+        st.warning(f"⚠️ Image '{header_path}' not found! The quotation will use text fallback.")
     else:
         st.success(f"✅ Header found: {FIRM_MAPPING[selected_firm]}")
     
