@@ -5,13 +5,11 @@ import re
 from datetime import datetime
 from io import BytesIO
 
-# Try importing python-docx
 try:
     from docx import Document
     from docx.shared import Pt, Inches, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
 except ImportError:
     st.error("❌ Library 'python-docx' is missing. Please run: pip install python-docx")
     st.stop()
@@ -19,14 +17,66 @@ except ImportError:
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
 
-# Map Firm Names to Image Files (Must be in 'headers' folder)
+# 1. FILE MAPPING (Templates must be in 'templates' folder)
 FIRM_MAPPING = {
-    "Electro World": "electroworld.jpg",
-    "Abhinav Enterprises": "abhinav.jpg",
-    "Shree Creative Marketing": "shree.jpg"
+    "Electro World": "Electro_Template.docx",
+    "Abhinav Enterprises": "Abhinav_Template.docx",
+    "Shree Creative Marketing": "Shree_Template.docx"
 }
 
-# --- 1. HELPERS ---
+# 2. DEFAULT TERMS PER FIRM (Extracted from your files)
+FIRM_DEFAULTS = {
+    "Electro World": {
+        "price": "Nett",
+        "gst": "Extra @ 18%",
+        "delivery": "Ex Stock / 7 Days",
+        "freight": "Ex Our Godown (Local Cartage Extra)",
+        "payment": "100% Against Delivery",
+        "validity": "7 Days",
+        "guarantee": "12 months from commissioning or 18 months from dispatch"
+    },
+    "Abhinav Enterprises": {
+        "price": "Nett",
+        "gst": "18% Extra",
+        "delivery": "Within 2-3 Weeks",
+        "freight": "P&F: NIL | F.O.R: Ex Indore",
+        "payment": "30% Advance, Balance against Proforma Invoice",
+        "validity": "3 Days",
+        "guarantee": "12 months from commissioning"
+    },
+    "Shree Creative Marketing": {
+        "price": "Nett",
+        "gst": "Extra @ 18%",
+        "delivery": "Ex Stock",
+        "freight": "To Pay Basis",
+        "payment": "Immediate",
+        "validity": "5 Days",
+        "guarantee": "Standard Mfg Warranty"
+    }
+}
+
+# --- STATE MANAGEMENT FOR DEFAULTS ---
+if 'selected_firm' not in st.session_state:
+    st.session_state['selected_firm'] = "Electro World"
+
+# Function to update inputs when firm changes
+def update_defaults():
+    firm = st.session_state['firm_selector']
+    defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
+    
+    st.session_state['p_term'] = defaults['price']
+    st.session_state['g_term'] = defaults['gst']
+    st.session_state['d_term'] = defaults['delivery']
+    st.session_state['f_term'] = defaults['freight']
+    st.session_state['pay_term'] = defaults['payment']
+    st.session_state['val_term'] = defaults['validity']
+    st.session_state['guar_term'] = defaults['guarantee']
+
+# Initialize session state for terms if not set
+if 'p_term' not in st.session_state:
+    update_defaults() # Load initial defaults
+
+# --- HELPERS ---
 def clean_price_value(val):
     if pd.isna(val): return 0.0
     s = str(val).strip()
@@ -49,185 +99,113 @@ def detect_uom(sheet_name, price_col_name):
     if "GLAND" in s_up or "HMI" in s_up or "COSMOS" in s_up: return "Pc"
     return "Mtr" 
 
-# --- 2. WORD GENERATOR ---
-def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Electro World"):
-    doc = Document()
+# --- WORD GENERATOR ---
+def replace_text_in_paragraph(paragraph, key, value):
+    if key in paragraph.text:
+        paragraph.text = paragraph.text.replace(key, value)
+
+def fill_template_docx(template_path, client_data, cart_items, terms):
+    doc = Document(template_path)
     
-    # Styles
-    style = doc.styles['Normal']
-    font = style.font
-    font.name = 'Calibri'
-    font.size = Pt(11)
+    replacements = {
+        '{{REF_NO}}': str(client_data.get('ref_no', '')),
+        '{{DATE}}': datetime.now().strftime('%d-%b-%Y'),
+        '{{CLIENT_NAME}}': str(client_data.get('client_name', '')),
+        '{{CLIENT_ADDRESS}}': str(client_data.get('client_address', '')),
+        '{{SUBJECT}}': str(client_data.get('subject', '')),
+        '{{PRICE_TERM}}': str(terms.get('price_term', '')),
+        '{{GST_TERM}}': str(terms.get('gst_term', '')),
+        '{{DELIVERY_TERM}}': str(terms.get('delivery_term', '')),
+        '{{FREIGHT_TERM}}': str(terms.get('freight_term', '')),
+        '{{PAYMENT_TERM}}': str(terms.get('payment_term', '')),
+        '{{VALIDITY_TERM}}': str(terms.get('validity_term', '')),
+        '{{GUARANTEE_TERM}}': str(terms.get('guarantee_term', '')),
+    }
 
-    # --- A. HEADER IMAGE ---
-    if header_path and os.path.exists(header_path):
-        section = doc.sections[0]
-        header = section.header
-        p = header.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run()
-        # Adjust width to fit page width approx (7.5 inches)
-        run.add_picture(header_path, width=Inches(7.5))
-    else:
-        # Fallback text if image missing
-        section = doc.sections[0]
-        header = section.header
-        p = header.paragraphs[0]
-        p.text = firm_name.upper()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.runs[0].bold = True
-        p.runs[0].font.size = Pt(16)
+    # Replace in Paragraphs
+    for paragraph in doc.paragraphs:
+        for key, value in replacements.items():
+            replace_text_in_paragraph(paragraph, key, value)
 
-    # --- B. META DATA (Ref / Date) ---
-    table_meta = doc.add_table(rows=1, cols=2)
-    table_meta.width = Inches(7.5)
-    
-    # FIXED: Remove borders using robust Oxml method
-    for row in table_meta.rows:
-        for cell in row.cells:
-            tc = cell._tc
-            tcPr = tc.get_or_add_tcPr()
-            tcBorders = OxmlElement('w:tcBorders')
-            for border in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-                node = OxmlElement(f'w:{border}')
-                node.set(qn('w:val'), 'nil')
-                tcBorders.append(node)
-            tcPr.append(tcBorders)
+    # Replace in Tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for key, value in replacements.items():
+                        replace_text_in_paragraph(paragraph, key, value)
 
-    c1 = table_meta.cell(0, 0)
-    p = c1.paragraphs[0]
-    p.add_run("Our Ref: ").bold = True
-    p.add_run(client_data['ref_no'])
-    
-    c2 = table_meta.cell(0, 1)
-    p = c2.paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run("Date: ").bold = True
-    p.add_run(datetime.now().strftime('%d-%b-%Y'))
+    # Insert Table at {{TABLE_HERE}}
+    target_paragraph = None
+    for paragraph in doc.paragraphs:
+        if '{{TABLE_HERE}}' in paragraph.text:
+            target_paragraph = paragraph
+            break
+            
+    if target_paragraph:
+        target_paragraph.text = "" # Clear placeholder
+        
+        headers = ["S.No.", "Item Description", "Qty", "Unit", "Rate", "Amount", "Remark"]
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = 'Table Grid'
+        table.autofit = False
+        
+        widths = [Cm(1.2), Cm(6.5), Cm(2.0), Cm(1.5), Cm(2.5), Cm(3.0), Cm(3.0)]
+        for i, w in enumerate(widths): table.columns[i].width = w
 
-    doc.add_paragraph()
+        for i, text in enumerate(headers):
+            cell = table.rows[0].cells[i]
+            cell.text = text
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cell.paragraphs[0].runs[0].bold = True
 
-    # --- C. CLIENT ---
-    p = doc.add_paragraph()
-    p.add_run("To,\n").bold = True
-    p.add_run(client_data['client_name']).bold = True
-    p.add_run("\n" + client_data['client_address'])
-    
-    doc.add_paragraph()
+        total_amt = 0
+        for i, item in enumerate(cart_items):
+            row = table.add_row().cells
+            lp = item['List Price']
+            disc = item['Discount']
+            qty = item['Qty']
+            net_rate = lp * (1 - disc/100)
+            line_total = net_rate * qty
+            total_amt += line_total
+            
+            desc = item['Description']
+            if item.get('Make'): desc += f" ({item['Make']})"
+            
+            row[0].text = str(i+1)
+            row[1].text = desc
+            row[2].text = f"{qty:,.2f}"
+            row[3].text = item['Display Unit'].split()[0]
+            row[4].text = f"{net_rate:,.2f}"
+            row[5].text = f"{line_total:,.2f}"
+            row[6].text = item.get('Remark', '')
+            
+            for idx in [2, 4, 5]: row[idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    # --- D. SUBJECT ---
-    p = doc.add_paragraph()
-    r = p.add_run(f"Sub: {client_data['subject']}")
-    r.bold = True
-    r.underline = True
-
-    p = doc.add_paragraph("Sirs,")
-    p = doc.add_paragraph("We acknowledge with thanks the receipt of your above enquiry and are pleased to quote as under:-")
-
-    # --- E. ANNEXURE HEADING ---
-    doc.add_paragraph().add_run("ANNEXURE I : PRICE SCHEDULE").bold = True
-    
-    # --- F. TERMS ---
-    doc.add_paragraph("Other Terms & Conditions are as under:")
-    
-    terms_list = [
-        ("Price", terms['price_term']),
-        ("GST", terms['gst_term']),
-        ("Delivery", terms['delivery_term']),
-        ("Freight", terms['freight_term']),
-        ("Payment", terms['payment_term']),
-        ("Validity", terms['validity_term']),
-        ("Guarantee", terms['guarantee_term'])
-    ]
-
-    table_terms = doc.add_table(rows=len(terms_list), cols=2)
-    table_terms.autofit = False 
-    table_terms.columns[0].width = Inches(1.5)
-    table_terms.columns[1].width = Inches(6.0)
-
-    for i, (k, v) in enumerate(terms_list):
-        table_terms.cell(i, 0).text = k
-        table_terms.cell(i, 0).paragraphs[0].runs[0].bold = True
-        table_terms.cell(i, 1).text = f": {v}"
-
-    doc.add_paragraph()
-    
-    # --- G. CLOSING ---
-    p = doc.add_paragraph()
-    p.add_run("Thanking You\nYours Faithfully\n")
-    p.add_run(f"For {firm_name}").bold = True
-    
-    doc.add_page_break()
-
-    # --- H. PRICE TABLE ---
-    h = doc.add_paragraph()
-    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    h.add_run("ANNEXURE I: PRICE SCHEDULE").bold = True
-    
-    headers = ["S.No.", "Item Description", "Qty", "Unit", "Rate", "Amount", "Remark"]
-    table = doc.add_table(rows=1, cols=len(headers))
-    table.style = 'Table Grid'
-    table.autofit = False
-    
-    # Approx Widths
-    widths = [Cm(1.2), Cm(6.0), Cm(2.0), Cm(1.5), Cm(2.5), Cm(3.0), Cm(3.0)]
-    for i, w in enumerate(widths): table.columns[i].width = w
-
-    # Header Row
-    for i, text in enumerate(headers):
-        cell = table.rows[0].cells[i]
-        cell.text = text
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        cell.paragraphs[0].runs[0].bold = True
-
-    # Data Rows
-    total_amt = 0
-    for i, item in enumerate(cart_items):
         row = table.add_row().cells
+        c_label = row[1]
+        c_label.text = "Total (Excl. GST)"
+        c_label.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        c_label.paragraphs[0].runs[0].bold = True
         
-        lp = item['List Price']
-        disc = item['Discount']
-        qty = item['Qty']
+        c_val = row[5]
+        c_val.text = f"{total_amt:,.2f}"
+        c_val.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        c_val.paragraphs[0].runs[0].bold = True
         
-        net_rate = lp * (1 - disc/100)
-        line_total = net_rate * qty
-        total_amt += line_total
-        
-        desc = item['Description']
-        if item.get('Make'): desc += f" ({item['Make']})"
-        
-        row[0].text = str(i+1)
-        row[1].text = desc
-        row[2].text = f"{qty:,.2f}"
-        row[3].text = item['Display Unit'].split()[0]
-        row[4].text = f"{net_rate:,.2f}"
-        row[5].text = f"{line_total:,.2f}"
-        row[6].text = item.get('Remark', '')
-        
-        for idx in [2, 4, 5]: row[idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-    # Total Row
-    row = table.add_row().cells
-    row[1].text = "Total (Excl. GST)"
-    row[1].paragraphs[0].runs[0].bold = True
-    row[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    
-    row[5].text = f"{total_amt:,.2f}"
-    row[5].paragraphs[0].runs[0].bold = True
-    row[5].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        target_paragraph._p.addnext(table._tbl)
 
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer
 
-# --- 3. DATA LOADER ---
+# --- DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
     search_dirs = ['.', 'data'] 
     all_dfs = []
     logs = []
-
     excel_files = []
     for d in search_dirs:
         if os.path.exists(d):
@@ -281,14 +259,13 @@ def load_data_from_files():
 
                         clean_df = clean_df[clean_df['List Price'] > 0]
                         all_dfs.append(clean_df)
-                        logs.append(f"✅ Loaded {main_cat} -> {sheet}")
                 except: pass
         except: pass
 
     if not all_dfs: return pd.DataFrame(), logs
     return pd.concat(all_dfs, ignore_index=True), logs
 
-# --- 4. APP UI ---
+# --- APP UI ---
 catalog, logs = load_data_from_files()
 if 'cart' not in st.session_state: st.session_state['cart'] = []
 
@@ -296,8 +273,6 @@ if 'cart' not in st.session_state: st.session_state['cart'] = []
 with st.sidebar:
     st.title("🔧 Config")
     if st.button("🔄 Refresh Data"): st.cache_data.clear(); st.rerun()
-    with st.expander("System Logs"):
-        for l in logs: st.write(l)
 
     st.markdown("---")
     st.header("1. Add Item")
@@ -355,10 +330,8 @@ st.title("📄 Quotation System")
 if not st.session_state['cart']:
     st.info("Add items to start.")
 else:
-    # --- TABLE ---
+    # TABLE
     st.subheader("1. Item List")
-    
-    # Custom Grid Header
     h1, h2, h3, h4, h5, h6, h7 = st.columns([0.5, 3.5, 1.5, 1.5, 1.2, 1.5, 0.5])
     h1.write("#"); h2.write("Desc"); h3.write("Make"); h4.write("Qty"); h5.write("Unit"); h6.write("Total"); 
     st.divider()
@@ -384,18 +357,17 @@ else:
     st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
     st.markdown("---")
 
-    # --- WORD GENERATOR FORM ---
+    # GENERATOR FORM
     st.subheader("2. Generate Official Quotation")
     
-    # FIRM SELECTOR
-    selected_firm = st.selectbox("Select Letterhead (Firm)", list(FIRM_MAPPING.keys()))
+    # FIRM SELECTOR - UPDATES DEFAULTS
+    selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
     
-    # Check if header exists
-    header_path = os.path.join("headers", FIRM_MAPPING[selected_firm])
-    if not os.path.exists(header_path):
-        st.warning(f"⚠️ Image '{header_path}' not found! The quotation will use text fallback.")
+    template_path = os.path.join("templates", FIRM_MAPPING[selected_firm])
+    if not os.path.exists(template_path):
+        st.error(f"⚠️ Template '{template_path}' not found! Create it in 'templates' folder.")
     else:
-        st.success(f"✅ Header found: {FIRM_MAPPING[selected_firm]}")
+        st.success(f"✅ Active Template: {FIRM_MAPPING[selected_firm]}")
     
     st.markdown("---")
     c1, c2 = st.columns(2)
@@ -406,22 +378,26 @@ else:
     with c2:
         client_address = st.text_area("Client Address", placeholder="Address Line 1\nCity, State")
     
-    st.markdown("#### Terms")
+    st.markdown("#### Terms & Conditions (Editable)")
+    
+    # LINKED TO SESSION STATE
     tc1, tc2, tc3 = st.columns(3)
-    p_term = tc1.text_input("Price Term", value="Nett")
-    g_term = tc2.text_input("GST Term", value="Extra @ 18%")
-    d_term = tc3.text_input("Delivery", value="Ex Stock / 7 Days")
+    p_term = tc1.text_input("Price Term", key='p_term')
+    g_term = tc2.text_input("GST Term", key='g_term')
+    d_term = tc3.text_input("Delivery", key='d_term')
     
     tc4, tc5, tc6 = st.columns(3)
-    f_term = tc4.text_input("Freight", value="Ex Our Godown")
-    pay_term = tc5.text_input("Payment", value="100% Against Delivery")
-    val_term = tc6.text_input("Validity", value="7 Days")
+    f_term = tc4.text_input("Freight", key='f_term')
+    pay_term = tc5.text_input("Payment", key='pay_term')
+    val_term = tc6.text_input("Validity", key='val_term')
     
-    guarantee = st.text_input("Guarantee", value="12 months from commissioning or 18 months from dispatch")
+    guarantee = st.text_input("Guarantee", key='guar_term')
 
     if st.button("📥 Download Word Document", type="primary"):
         if not client_name:
             st.error("Please enter Client Name.")
+        elif not os.path.exists(template_path):
+            st.error("Template file missing.")
         else:
             client_data = {
                 "client_name": client_name, "client_address": client_address,
@@ -433,7 +409,7 @@ else:
                 "guarantee_term": guarantee
             }
             
-            docx_file = create_docx(client_data, st.session_state['cart'], terms, header_path, selected_firm)
+            docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms)
             
             st.download_button(
                 label=f"Download Quote for {selected_firm}",
