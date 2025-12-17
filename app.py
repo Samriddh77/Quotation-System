@@ -33,28 +33,47 @@ if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
 
+# --- AUTO-FILL DEFAULTS (Customized per Firm) ---
 FIRM_DEFAULTS = {
     "Electro World": {
-        "price": "Nett", "gst": "Extra @ 18%", "delivery": "Ex Stock / 7 Days",
-        "freight": "Ex Our Godown", "payment": "100% Against Delivery",
-        "validity": "7 Days", "guarantee": "12 months"
+        "prefix": "EW/QTN",  # Unique Ref Prefix
+        "price": "Nett Ex-Works",
+        "gst": "Extra @ 18% as applicable",
+        "delivery": "Ex-Stock / 1-2 Weeks",
+        "freight": "To Pay / Ex-Godown",
+        "payment": "100% Against Proforma Invoice",
+        "validity": "7 Days",
+        "guarantee": "12 Months from date of supply"
     },
     "Abhinav Enterprises": {
-        "price": "Nett", "gst": "18% Extra", "delivery": "Within 2-3 Weeks",
-        "freight": "P&F: NIL | F.O.R: Ex Indore", "payment": "30% Advance",
-        "validity": "3 Days", "guarantee": "12 months"
+        "prefix": "AE/QTN",
+        "price": "Nett F.O.R.",
+        "gst": "18% Extra",
+        "delivery": "Within 2-3 Weeks",
+        "freight": "P&F: NIL | F.O.R: Ex Indore",
+        "payment": "30% Advance, Balance against Delivery",
+        "validity": "15 Days",
+        "guarantee": "12 Months Mfg Warranty"
     },
     "Shree Creative Marketing": {
-        "price": "Nett", "gst": "Extra @ 18%", "delivery": "Ex Stock",
-        "freight": "To Pay Basis", "payment": "Immediate",
-        "validity": "5 Days", "guarantee": "Standard Mfg Warranty"
+        "prefix": "SCM/QTN",
+        "price": "Nett",
+        "gst": "Inclusive",
+        "delivery": "Immediate",
+        "freight": "Paid by us",
+        "payment": "COD",
+        "validity": "5 Days",
+        "guarantee": "Standard"
     }
 }
 
 # --- STATE MANAGEMENT ---
 def update_defaults():
+    """ Updates Terms AND Reference Number based on selected firm """
     firm = st.session_state.get('firm_selector', "Electro World")
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
+    
+    # Update Terms
     st.session_state['p_term'] = defaults['price']
     st.session_state['g_term'] = defaults['gst']
     st.session_state['d_term'] = defaults['delivery']
@@ -62,9 +81,14 @@ def update_defaults():
     st.session_state['pay_term'] = defaults['payment']
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
+    
+    # Update Reference Number automatically
+    date_str = datetime.now().strftime('%y%m%d')
+    st.session_state['ref_no_val'] = f"{defaults['prefix']}/{date_str}/001"
 
+# Initialize Session State
 if 'firm_selector' not in st.session_state: st.session_state['firm_selector'] = "Electro World"
-if 'p_term' not in st.session_state: update_defaults()
+if 'p_term' not in st.session_state: update_defaults() # Run once on load
 
 # --- HELPERS ---
 def clean_price_value(val):
@@ -95,12 +119,12 @@ def set_table_borders(table):
     for border_name in ["top", "left", "bottom", "right", "insideH", "insideV"]:
         border = OxmlElement(f'w:{border_name}')
         border.set(qn('w:val'), 'single')
-        border.set(qn('w:sz'), '4') # 4 = 1/2 pt
+        border.set(qn('w:sz'), '4') 
         border.set(qn('w:space'), '0')
         border.set(qn('w:color'), '000000')
         tblBorders.append(border)
 
-    # 2. Cell Margins (Padding) - Ensures text doesn't touch lines
+    # 2. Cell Margins (Padding)
     tblCellMar = tblPr.first_child_found_in("w:tblCellMar")
     if tblCellMar is None:
         tblCellMar = OxmlElement('w:tblCellMar')
@@ -108,13 +132,13 @@ def set_table_borders(table):
 
     for side in ["top", "bottom"]:
         node = OxmlElement(f"w:{side}")
-        node.set(qn("w:w"), "60") # Approx 0.04 inches
+        node.set(qn("w:w"), "60") 
         node.set(qn("w:type"), "dxa")
         tblCellMar.append(node)
         
     for side in ["left", "right"]:
         node = OxmlElement(f"w:{side}")
-        node.set(qn("w:w"), "100") # Approx 0.07 inches
+        node.set(qn("w:w"), "100") 
         node.set(qn("w:type"), "dxa")
         tblCellMar.append(node)
 
@@ -156,10 +180,9 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
     }
 
-    # 1. Perform Text Replacements
     safe_replace_text(doc, replacements)
 
-    # 2. Insert Table
+    # Insert Table
     target_paragraph = None
     for paragraph in doc.paragraphs:
         if '{{TABLE_HERE}}' in paragraph.text:
@@ -170,32 +193,20 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         target_paragraph.text = "" 
         
         # --- COLUMN WIDTH RATIOS (Total ~100) ---
-        # We define proportional widths so it fills the page perfectly
         col_ratios = {
-            "S.No.": 5,
-            "Sub Category": 12,
-            "Item Description": 35,
-            "Make": 10,
-            "Qty": 8,
-            "Unit": 8,
-            "Rate": 10,
-            "Amount": 12
+            "S.No.": 5, "Sub Category": 12, "Item Description": 35,
+            "Make": 10, "Qty": 8, "Unit": 8, "Rate": 10, "Amount": 12
         }
-        
         active_headers = [h for h in visible_cols if h in col_ratios]
         
-        # Add table
         table = doc.add_table(rows=1, cols=len(active_headers))
         
-        # --- AUTO-FIT LOGIC ---
+        # Auto-Fit to Page Width
         table.autofit = False 
         table.allow_autofit = False
-        
-        # Calculate total width of page (approx 6.5 inches for A4 with standard margins)
-        # We set table width to 100% (5000 pct) using OXML
         tblPr = table._tbl.tblPr
         tblW = OxmlElement('w:tblW')
-        tblW.set(qn('w:w'), '5000') # 5000 = 100% width
+        tblW.set(qn('w:w'), '5000') # 100% width
         tblW.set(qn('w:type'), 'pct')
         tblPr.append(tblW)
         
@@ -214,7 +225,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         total_amt = 0
         for i, item in enumerate(cart_items):
             row_cells = table.add_row().cells
-            
             lp = item['List Price']
             disc = item['Discount']
             qty = item['Qty']
@@ -239,8 +249,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             for idx, header in enumerate(active_headers):
                 cell = row_cells[idx]
                 cell.text = data_map.get(header, "")
-                
-                # Alignments
                 if header in ["Qty", "Rate", "Amount"]:
                     cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 elif header in ["S.No.", "Unit", "Make"]:
@@ -384,7 +392,6 @@ else:
     st.subheader("2. Generate Quotation")
     selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
     
-    # --- TABLE SETTINGS ---
     st.markdown("##### Table Settings")
     all_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
     visible_cols = st.multiselect("Columns to include", all_cols, default=all_cols)
@@ -392,7 +399,8 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         client_name = st.text_input("Client Name", placeholder="M/s Client Name")
-        ref_no = st.text_input("Ref No", value=f"QTN/{datetime.now().strftime('%y%m%d')}/001")
+        # --- KEY CHANGE: LINK REF_NO TO SESSION STATE ---
+        ref_no = st.text_input("Ref No", key="ref_no_val") 
         subject = st.text_input("Subject", value="OFFER FOR ELECTRICAL GOODS")
     with c2:
         client_address = st.text_area("Client Address", placeholder="Address Line 1\nCity, State")
