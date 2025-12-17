@@ -228,8 +228,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("2. Table Columns")
-    available_cols = ["Main Category", "Sub Category", "List Price", "Discount %", "Net Rate", "GST %", "GST Amount"]
+    
+    # FIXED: Added "Make" to available_cols because it is in default_cols
+    available_cols = ["Make", "Main Category", "Sub Category", "List Price", "Discount %", "Net Rate", "GST %", "GST Amount"]
     default_cols = ["Make", "List Price", "Discount %", "Net Rate", "GST Amount"]
+    
     selected_cols = st.multiselect("Select Extra Columns:", available_cols, default=default_cols)
     
     if st.button("🗑️ Clear Entire Cart"):
@@ -275,7 +278,6 @@ else:
         c5.write(f"₹ {tot:,.0f}")
         
         # DELETE BUTTON
-        # key=f"del_{i}" ensures every button is unique
         if c6.button("🗑️", key=f"del_{i}", help="Remove this item"):
             st.session_state['cart'].pop(i)
             st.rerun()
@@ -319,15 +321,23 @@ else:
         
     # Column ordering
     final_cols = ["No", "Description"] 
+    # Only add Make if selected in the multiselect
     if "Make" in selected_cols: final_cols.append("Make")
+    
     final_cols = final_cols + ["Qty", "Unit"]
+    
+    # Add other selected cols (avoiding duplicates)
     for c in selected_cols:
         if c not in final_cols: final_cols.append(c)
+        
     final_cols.append("Total")
     
     df_disp = pd.DataFrame(data)
+    
+    # Safety: ensure all cols exist
     for c in final_cols:
         if c not in df_disp.columns: df_disp[c] = ""
+        
     df_disp = df_disp[final_cols]
     
     st.table(df_disp.set_index("No"))
