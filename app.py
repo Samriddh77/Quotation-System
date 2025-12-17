@@ -183,8 +183,20 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
     if target_paragraph:
         target_paragraph.text = "" 
         
-        # Column Ratios
-        col_ratios = {"S.No.": 5, "Sub Category": 12, "Item Description": 35, "Make": 10, "Qty": 8, "Unit": 8, "Rate": 10, "Amount": 12}
+        # Column Ratios (Added new columns here)
+        col_ratios = {
+            "S.No.": 5, 
+            "Sub Category": 12, 
+            "Item Description": 35, 
+            "Make": 10, 
+            "Qty": 8, 
+            "Unit": 8, 
+            "Discount %": 8,       # NEW
+            "Rate": 10, 
+            "Rate (Inc. GST)": 11, # NEW
+            "Amount": 12,
+            "Amount (Inc. GST)": 13 # NEW
+        }
         active_headers = [h for h in visible_cols if h in col_ratios]
         
         table = doc.add_table(rows=1, cols=len(active_headers))
@@ -208,6 +220,8 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             cell.paragraphs[0].runs[0].bold = True
 
         total_amt = 0
+        total_amt_inc_gst = 0 # Track total with GST
+        
         for i, item in enumerate(cart_items):
             row_cells = table.add_row().cells
             lp = item['List Price']
@@ -217,39 +231,75 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             line_total = net_rate * qty
             total_amt += line_total
             
+            # --- CALCULATE EXTRA COLUMNS ---
+            # Assuming 18% GST standard for the calculated columns
+            gst_multiplier = 1.18 
+            rate_inc_gst = net_rate * gst_multiplier
+            line_total_inc_gst = line_total * gst_multiplier
+            total_amt_inc_gst += line_total_inc_gst
+            
             desc = item['Description']
             make_str = f"{item['Make']} Make" if item['Make'].strip() else ""
             qty_fmt = format_qty(qty, item['Display Unit'])
             
             data_map = {
-                "S.No.": str(i+1), "Sub Category": item.get('Sub Category', ''),
-                "Item Description": desc, "Make": make_str,
-                "Qty": qty_fmt, "Unit": item['Display Unit'],
-                "Rate": f"{net_rate:,.2f}", "Amount": f"{line_total:,.2f}"
+                "S.No.": str(i+1), 
+                "Sub Category": item.get('Sub Category', ''),
+                "Item Description": desc, 
+                "Make": make_str,
+                "Qty": qty_fmt, 
+                "Unit": item['Display Unit'],
+                "Rate": f"{net_rate:,.2f}", 
+                "Amount": f"{line_total:,.2f}",
+                # NEW COLUMNS MAPPING
+                "Discount %": f"{disc:.2f}%" if disc > 0 else "0%",
+                "Rate (Inc. GST)": f"{rate_inc_gst:,.2f}",
+                "Amount (Inc. GST)": f"{line_total_inc_gst:,.2f}"
             }
             
             for idx, header in enumerate(active_headers):
                 cell = row_cells[idx]
                 cell.text = data_map.get(header, "")
-                if header in ["Qty", "Rate", "Amount"]: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                elif header in ["S.No.", "Unit", "Make"]: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-                else: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+                if header in ["Qty", "Rate", "Amount", "Rate (Inc. GST)", "Amount (Inc. GST)", "Discount %"]: 
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                elif header in ["S.No.", "Unit", "Make"]: 
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else: 
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        # Total Row
-        if "Amount" in active_headers:
+        # Total Row logic
+        # We need to decide which total to show based on columns selected
+        # If "Amount (Inc. GST)" is visible, we show that total. 
+        # If "Amount" is visible, we show that total.
+        
+        # Helper to print total row
+        def add_total_row_value(row, header_name, value, label_text):
+             if header_name in active_headers:
+                amt_idx = active_headers.index(header_name)
+                # Find a cell to the left for the label
+                label_idx = max(0, amt_idx - 1)
+                
+                # Only write label if the cell is empty (to avoid overwriting if two totals are side-by-side)
+                if not row[label_idx].text:
+                    row[label_idx].text = label_text
+                    row[label_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    row[label_idx].paragraphs[0].runs[0].bold = True
+                
+                row[amt_idx].text = f"{value:,.2f}"
+                row[amt_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                if not row[amt_idx].paragraphs[0].runs: 
+                    row[amt_idx].paragraphs[0].add_run(f"{value:,.2f}").bold = True
+                else: 
+                    row[amt_idx].paragraphs[0].runs[0].bold = True
+
+        if "Amount" in active_headers or "Amount (Inc. GST)" in active_headers:
             row = table.add_row().cells
-            amt_idx = active_headers.index("Amount")
-            label_idx = max(0, amt_idx - 1)
             
-            row[label_idx].text = "Grand Total (Excl. GST)"
-            row[label_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            if not row[label_idx].paragraphs[0].runs: row[label_idx].paragraphs[0].add_run("Grand Total (Excl. GST)").bold = True
-            else: row[label_idx].paragraphs[0].runs[0].bold = True
-
-            row[amt_idx].text = f"{total_amt:,.2f}"
-            row[amt_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            if not row[amt_idx].paragraphs[0].runs: row[amt_idx].paragraphs[0].add_run(f"{total_amt:,.2f}").bold = True
-            else: row[amt_idx].paragraphs[0].runs[0].bold = True
+            if "Amount" in active_headers:
+                add_total_row_value(row, "Amount", total_amt, "Grand Total (Basic)")
+                
+            if "Amount (Inc. GST)" in active_headers:
+                add_total_row_value(row, "Amount (Inc. GST)", total_amt_inc_gst, "Grand Total (Inc. GST)")
 
         target_paragraph._p.addnext(table._tbl)
 
@@ -448,8 +498,15 @@ else:
     )
     
     st.markdown("##### Table Settings")
-    all_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
-    visible_cols = st.multiselect("Columns to include", all_cols, default=all_cols)
+    # UPDATED: Added new optional columns
+    all_cols = [
+        "S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", 
+        "Rate", "Discount %", "Rate (Inc. GST)", "Amount", "Amount (Inc. GST)"
+    ]
+    # Default selection keeps it simple (User can check the others)
+    default_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
+    
+    visible_cols = st.multiselect("Columns to include", all_cols, default=default_cols)
 
     c1, c2 = st.columns(2)
     with c1:
