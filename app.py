@@ -17,14 +17,14 @@ except ImportError:
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
 
-# 1. FILE MAPPING (Templates must be in 'templates' folder)
+# 1. FILE MAPPING
 FIRM_MAPPING = {
     "Electro World": "Electro_Template.docx",
     "Abhinav Enterprises": "Abhinav_Template.docx",
     "Shree Creative Marketing": "Shree_Template.docx"
 }
 
-# 2. DEFAULT TERMS PER FIRM (Extracted from your files)
+# 2. DEFAULT TERMS
 FIRM_DEFAULTS = {
     "Electro World": {
         "price": "Nett",
@@ -55,13 +55,10 @@ FIRM_DEFAULTS = {
     }
 }
 
-# --- STATE MANAGEMENT FOR DEFAULTS ---
-if 'selected_firm' not in st.session_state:
-    st.session_state['selected_firm'] = "Electro World"
-
-# Function to update inputs when firm changes
+# --- STATE MANAGEMENT (FIXED) ---
 def update_defaults():
-    firm = st.session_state['firm_selector']
+    # Use .get() to avoid KeyError if widget isn't rendered yet
+    firm = st.session_state.get('firm_selector', "Electro World")
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
     
     st.session_state['p_term'] = defaults['price']
@@ -72,9 +69,13 @@ def update_defaults():
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
 
-# Initialize session state for terms if not set
+# Initialize 'firm_selector' BEFORE the widget is created
+if 'firm_selector' not in st.session_state:
+    st.session_state['firm_selector'] = "Electro World"
+
+# Load initial defaults
 if 'p_term' not in st.session_state:
-    update_defaults() # Load initial defaults
+    update_defaults()
 
 # --- HELPERS ---
 def clean_price_value(val):
@@ -143,7 +144,7 @@ def fill_template_docx(template_path, client_data, cart_items, terms):
             break
             
     if target_paragraph:
-        target_paragraph.text = "" # Clear placeholder
+        target_paragraph.text = "" 
         
         headers = ["S.No.", "Item Description", "Qty", "Unit", "Rate", "Amount", "Remark"]
         table = doc.add_table(rows=1, cols=len(headers))
