@@ -8,17 +8,23 @@ from io import BytesIO
 # Try importing python-docx
 try:
     from docx import Document
-    from docx.shared import Pt, Inches, Cm, RGBColor
+    from docx.shared import Pt, Inches, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.enum.table import WD_TABLE_ALIGNMENT
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 except ImportError:
     st.error("❌ Library 'python-docx' is missing. Please run: pip install python-docx")
     st.stop()
 
-# --- PAGE CONFIG ---
+# --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
+
+# Map Firm Names to Image Files (Must be in 'headers' folder)
+FIRM_MAPPING = {
+    "Electro World": "electroworld.jpg",
+    "Abhinav Enterprises": "abhinav.jpg",
+    "Shree Creative Marketing": "shree.jpg"
+}
 
 # --- 1. HELPERS ---
 def clean_price_value(val):
@@ -43,33 +49,39 @@ def detect_uom(sheet_name, price_col_name):
     if "GLAND" in s_up or "HMI" in s_up or "COSMOS" in s_up: return "Pc"
     return "Mtr" 
 
-# --- 2. WORD GENERATOR FUNCTION ---
-def create_docx(client_data, cart_items, terms, header_image_file=None):
+# --- 2. WORD GENERATOR ---
+def create_docx(client_data, cart_items, terms, header_path=None, firm_name="Electro World"):
     doc = Document()
     
-    # --- A. SETUP STYLES (Calibri) ---
+    # Styles
     style = doc.styles['Normal']
     font = style.font
     font.name = 'Calibri'
     font.size = Pt(11)
 
-    # --- B. HEADER IMAGE (LETTERHEAD) ---
-    if header_image_file is not None:
+    # --- HEADER IMAGE ---
+    if header_path and os.path.exists(header_path):
         section = doc.sections[0]
         header = section.header
-        paragraph = header.paragraphs[0]
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = paragraph.add_run()
-        # Adjust width to fit page width approx (7.5 inches)
-        run.add_picture(header_image_file, width=Inches(7.5))
+        p = header.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run()
+        run.add_picture(header_path, width=Inches(7.5))
+    else:
+        # Fallback text if image missing
+        section = doc.sections[0]
+        header = section.header
+        p = header.paragraphs[0]
+        p.text = firm_name.upper()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.runs[0].bold = True
+        p.runs[0].font.size = Pt(16)
 
-    # --- C. REF NO & DATE LINE ---
-    # Use a table with invisible borders for perfect Left/Right alignment
+    # --- META DATA (Ref / Date) ---
     table_meta = doc.add_table(rows=1, cols=2)
-    table_meta.autofit = False
-    table_meta.width = Inches(7.5) # Full width
+    table_meta.width = Inches(7.5)
     
-    # Remove borders for this meta table
+    # Remove borders
     tbl = table_meta._tbl
     for cell in tbl.iter_tks():
         tcPr = cell.tcPr
@@ -81,43 +93,41 @@ def create_docx(client_data, cart_items, terms, header_image_file=None):
         tcPr.append(tcBorders)
 
     c1 = table_meta.cell(0, 0)
-    p_ref = c1.paragraphs[0]
-    p_ref.add_run("Our Ref: ").bold = True
-    p_ref.add_run(client_data['ref_no'])
+    p = c1.paragraphs[0]
+    p.add_run("Our Ref: ").bold = True
+    p.add_run(client_data['ref_no'])
     
     c2 = table_meta.cell(0, 1)
-    p_date = c2.paragraphs[0]
-    p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p_date.add_run("Date: ").bold = True
-    p_date.add_run(datetime.now().strftime('%d-%b-%Y'))
+    p = c2.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run("Date: ").bold = True
+    p.add_run(datetime.now().strftime('%d-%b-%Y'))
 
-    doc.add_paragraph() # Spacer
+    doc.add_paragraph()
 
-    # --- D. CLIENT DETAILS ---
+    # --- CLIENT ---
     p = doc.add_paragraph()
     p.add_run("To,\n").bold = True
     p.add_run(client_data['client_name']).bold = True
     p.add_run("\n" + client_data['client_address'])
     
-    doc.add_paragraph() # Spacer
+    doc.add_paragraph()
 
-    # --- E. SUBJECT ---
+    # --- SUBJECT ---
     p = doc.add_paragraph()
-    runner = p.add_run(f"Sub: {client_data['subject']}")
-    runner.bold = True
-    runner.underline = True
+    r = p.add_run(f"Sub: {client_data['subject']}")
+    r.bold = True
+    r.underline = True
 
-    # --- F. OPENING TEXT ---
     p = doc.add_paragraph("Sirs,")
     p = doc.add_paragraph("We acknowledge with thanks the receipt of your above enquiry and are pleased to quote as under:-")
 
-    # --- G. ANNEXURE HEADER ---
+    # --- ANNEXURE HEADING ---
     doc.add_paragraph().add_run("ANNEXURE I : PRICE SCHEDULE").bold = True
     
-    # --- H. TERMS & CONDITIONS (Aligned Table) ---
+    # --- TERMS ---
     doc.add_paragraph("Other Terms & Conditions are as under:")
     
-    # Terms list
     terms_list = [
         ("Price", terms['price_term']),
         ("GST", terms['gst_term']),
@@ -134,52 +144,44 @@ def create_docx(client_data, cart_items, terms, header_image_file=None):
     table_terms.columns[1].width = Inches(6.0)
 
     for i, (k, v) in enumerate(terms_list):
-        cell_k = table_terms.cell(i, 0)
-        cell_v = table_terms.cell(i, 1)
-        cell_k.text = f"{k}"
-        cell_v.text = f": {v}"
-        # Make key bold
-        cell_k.paragraphs[0].runs[0].bold = True
+        table_terms.cell(i, 0).text = k
+        table_terms.cell(i, 0).paragraphs[0].runs[0].bold = True
+        table_terms.cell(i, 1).text = f": {v}"
 
     doc.add_paragraph()
     
-    # --- I. CLOSING ---
+    # --- CLOSING ---
     p = doc.add_paragraph()
     p.add_run("Thanking You\nYours Faithfully\n")
-    p.add_run("For Electro World").bold = True
+    p.add_run(f"For {firm_name}").bold = True
     
-    doc.add_page_break() # Start Table on new page if needed, or keep same page
+    doc.add_page_break()
 
-    # --- J. ANNEXURE I (THE DATA TABLE) ---
+    # --- TABLE ---
     h = doc.add_paragraph()
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     h.add_run("ANNEXURE I: PRICE SCHEDULE").bold = True
     
-    # Columns
     headers = ["S.No.", "Item Description", "Qty", "Unit", "Rate", "Amount", "Remark"]
-    
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = 'Table Grid'
     table.autofit = False
     
-    # Widths (Approximation for A4)
+    # Approx Widths
     widths = [Cm(1.2), Cm(6.0), Cm(2.0), Cm(1.5), Cm(2.5), Cm(3.0), Cm(3.0)]
-    for i, width in enumerate(widths):
-        table.columns[i].width = width
+    for i, w in enumerate(widths): table.columns[i].width = w
 
-    # Header Row Style
-    hdr_cells = table.rows[0].cells
-    for i, h_text in enumerate(headers):
-        hdr_cells[i].text = h_text
-        para = hdr_cells[i].paragraphs[0]
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        para.runs[0].bold = True
-        # Add light gray shading to header? Optional, keeps it clean for now.
+    # Header Row
+    for i, text in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.text = text
+        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cell.paragraphs[0].runs[0].bold = True
 
     # Data Rows
     total_amt = 0
     for i, item in enumerate(cart_items):
-        row_cells = table.add_row().cells
+        row = table.add_row().cells
         
         lp = item['List Price']
         disc = item['Discount']
@@ -192,32 +194,26 @@ def create_docx(client_data, cart_items, terms, header_image_file=None):
         desc = item['Description']
         if item.get('Make'): desc += f" ({item['Make']})"
         
-        row_cells[0].text = str(i+1)
-        row_cells[1].text = desc
-        row_cells[2].text = f"{qty:,.2f}"
-        row_cells[3].text = item['Display Unit'].split()[0]
-        row_cells[4].text = f"{net_rate:,.2f}"
-        row_cells[5].text = f"{line_total:,.2f}"
-        row_cells[6].text = item.get('Remark', '')
+        row[0].text = str(i+1)
+        row[1].text = desc
+        row[2].text = f"{qty:,.2f}"
+        row[3].text = item['Display Unit'].split()[0]
+        row[4].text = f"{net_rate:,.2f}"
+        row[5].text = f"{line_total:,.2f}"
+        row[6].text = item.get('Remark', '')
         
-        # Align Numbers Right
-        for idx in [2, 4, 5]:
-            row_cells[idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        for idx in [2, 4, 5]: row[idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
     # Total Row
-    row_cells = table.add_row().cells
-    # Merge first few cells for label
-    c_label = row_cells[1]
-    c_label.text = "Total (Excl. GST)"
-    c_label.paragraphs[0].runs[0].bold = True
-    c_label.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    row = table.add_row().cells
+    row[1].text = "Total (Excl. GST)"
+    row[1].paragraphs[0].runs[0].bold = True
+    row[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
     
-    c_val = row_cells[5]
-    c_val.text = f"{total_amt:,.2f}"
-    c_val.paragraphs[0].runs[0].bold = True
-    c_val.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    row[5].text = f"{total_amt:,.2f}"
+    row[5].paragraphs[0].runs[0].bold = True
+    row[5].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    # Save
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -260,7 +256,6 @@ def load_data_from_files():
                     df.columns = [str(c).strip() for c in df.columns]
                     
                     name_col = next((c for c in df.columns if any(k in c.upper() for k in ["DESC", "PARTICULARS", "ITEM"])), df.columns[0])
-                    
                     price_col = next((c for c in df.columns if "PER MTR" in c.upper()), None)
                     if not price_col:
                         price_col = next((c for c in df.columns if any(k in c.upper() for k in ["LP", "RATE", "PRICE"]) and "AMOUNT" not in c.upper()), None)
@@ -291,7 +286,7 @@ def load_data_from_files():
     if not all_dfs: return pd.DataFrame(), logs
     return pd.concat(all_dfs, ignore_index=True), logs
 
-# --- 4. UI START ---
+# --- 4. APP UI ---
 catalog, logs = load_data_from_files()
 if 'cart' not in st.session_state: st.session_state['cart'] = []
 
@@ -299,13 +294,9 @@ if 'cart' not in st.session_state: st.session_state['cart'] = []
 with st.sidebar:
     st.title("🔧 Config")
     if st.button("🔄 Refresh Data"): st.cache_data.clear(); st.rerun()
-    with st.expander("Logs"):
+    with st.expander("System Logs"):
         for l in logs: st.write(l)
 
-    # --- UPLOAD HEADER IMAGE ---
-    st.markdown("### 🖼️ Letterhead")
-    uploaded_header = st.file_uploader("Upload Header Image (.jpg/.png)", type=['png', 'jpg', 'jpeg'])
-    
     st.markdown("---")
     st.header("1. Add Item")
     if not catalog.empty:
@@ -362,7 +353,7 @@ st.title("📄 Quotation System")
 if not st.session_state['cart']:
     st.info("Add items to start.")
 else:
-    # --- TABLE PREVIEW ---
+    # --- TABLE ---
     st.subheader("1. Item List")
     data = []
     grand_tot = 0
@@ -380,31 +371,42 @@ else:
     st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
     st.divider()
 
-    # --- WORD DOC GENERATOR FORM ---
-    st.subheader("2. Generate Official Quotation (.docx)")
+    # --- WORD GENERATOR FORM ---
+    st.subheader("2. Generate Official Quotation")
     
+    # FIRM SELECTOR
+    selected_firm = st.selectbox("Select Letterhead (Firm)", list(FIRM_MAPPING.keys()))
+    
+    # Check if header exists
+    header_path = os.path.join("headers", FIRM_MAPPING[selected_firm])
+    if not os.path.exists(header_path):
+        st.warning(f"⚠️ Image '{header_path}' not found! Using text fallback.")
+    else:
+        st.success(f"✅ Header found: {FIRM_MAPPING[selected_firm]}")
+    
+    st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
         client_name = st.text_input("Client Name", placeholder="M/s Client Name")
-        ref_no = st.text_input("Reference No", value=f"EW/QTN/{datetime.now().strftime('%y%m%d')}/001")
+        ref_no = st.text_input("Ref No", value=f"EW/QTN/{datetime.now().strftime('%y%m%d')}/001")
         subject = st.text_input("Subject", value="OFFER FOR CABLES / ELECTRICAL GOODS")
     with c2:
         client_address = st.text_area("Client Address", placeholder="Address Line 1\nCity, State")
     
-    st.markdown("#### Terms & Conditions")
+    st.markdown("#### Terms")
     tc1, tc2, tc3 = st.columns(3)
     p_term = tc1.text_input("Price Term", value="Nett")
     g_term = tc2.text_input("GST Term", value="Extra @ 18%")
     d_term = tc3.text_input("Delivery", value="Ex Stock / 7 Days")
     
     tc4, tc5, tc6 = st.columns(3)
-    f_term = tc4.text_input("Freight", value="Ex Our Godown (Local Cartage Extra)")
+    f_term = tc4.text_input("Freight", value="Ex Our Godown")
     pay_term = tc5.text_input("Payment", value="100% Against Delivery")
     val_term = tc6.text_input("Validity", value="7 Days")
     
     guarantee = st.text_input("Guarantee", value="12 months from commissioning or 18 months from dispatch")
 
-    if st.button("📥 Download Word Document"):
+    if st.button("📥 Download Word Document", type="primary"):
         if not client_name:
             st.error("Please enter Client Name.")
         else:
@@ -418,12 +420,11 @@ else:
                 "guarantee_term": guarantee
             }
             
-            # Pass the uploaded image file if it exists
-            docx_file = create_docx(client_data, st.session_state['cart'], terms, uploaded_header)
+            docx_file = create_docx(client_data, st.session_state['cart'], terms, header_path, selected_firm)
             
             st.download_button(
-                label="Click to Download .docx",
+                label=f"Download Quote for {selected_firm}",
                 data=docx_file,
-                file_name=f"Quotation_{client_name[:10]}.docx",
+                file_name=f"Quote_{selected_firm.replace(' ','_')}_{client_name[:5]}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
