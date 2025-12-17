@@ -54,8 +54,13 @@ FIRM_DEFAULTS = {
 
 # --- STATE MANAGEMENT ---
 def update_defaults():
+    # Get the currently selected firm directly from session state
     firm = st.session_state.get('firm_selector', "Electro World")
+    
+    # Robust retrieval of defaults
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
+    
+    # Force update session state keys
     st.session_state['p_term'] = defaults['price']
     st.session_state['g_term'] = defaults['gst']
     st.session_state['d_term'] = defaults['delivery']
@@ -63,11 +68,18 @@ def update_defaults():
     st.session_state['pay_term'] = defaults['payment']
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
+    
+    # Update Ref No
     date_str = datetime.now().strftime('%y%m%d')
     st.session_state['ref_no_val'] = f"{defaults['prefix']}/{date_str}/001"
 
-if 'firm_selector' not in st.session_state: st.session_state['firm_selector'] = "Electro World"
-if 'p_term' not in st.session_state: update_defaults()
+# Initialize Session State on first load
+if 'firm_selector' not in st.session_state:
+    st.session_state['firm_selector'] = "Electro World"
+    # Manually call update_defaults to populate initial values
+    update_defaults()
+    
+if 'cart' not in st.session_state: st.session_state['cart'] = []
 
 # --- HELPERS ---
 def clean_price_value(val):
@@ -160,7 +172,7 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{PAYMENT_TERM}}': str(terms.get('payment_term', '')),
         '{{VALIDITY_TERM}}': str(terms.get('validity_term', '')),
         '{{GUARANTEE_TERM}}': str(terms.get('guarantee_term', '')),
-        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
+        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')), # handle typo fallback
     }
 
     # Replace in Paragraphs & Tables
@@ -276,9 +288,6 @@ def load_data_from_files():
                     df = pd.read_excel(xls, sheet)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # --- UPDATED: EXACT COLUMN MATCHING ---
-                    # Based on your file structure: Item Description, List Price, Standard Discount, Coil Length (Mtr), UOM
-                    
                     # 1. Identify Columns
                     name_col = next((c for c in df.columns if "Item Description" == c), None)
                     price_col = next((c for c in df.columns if "List Price" == c), None)
@@ -322,7 +331,6 @@ def load_data_from_files():
 
 # --- APP UI ---
 catalog, logs = load_data_from_files()
-if 'cart' not in st.session_state: st.session_state['cart'] = []
 
 # SIDEBAR
 with st.sidebar:
@@ -436,7 +444,21 @@ else:
     # GENERATOR FORM
     st.subheader("2. Generate Official Quotation")
     
-    selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
+    # Determine the index of the current firm to keep selectbox in sync
+    firm_list = list(FIRM_MAPPING.keys())
+    try:
+        current_index = firm_list.index(st.session_state.get('firm_selector', "Electro World"))
+    except ValueError:
+        current_index = 0
+
+    # The Selectbox triggers the update_defaults function
+    selected_firm = st.selectbox(
+        "Select Template (Firm)", 
+        firm_list, 
+        index=current_index,
+        key="firm_selector", 
+        on_change=update_defaults
+    )
     
     st.markdown("##### Table Settings")
     all_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
@@ -445,6 +467,7 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         client_name = st.text_input("Client Name", placeholder="M/s Client Name")
+        # Linked to session state via key='ref_no_val'
         ref_no = st.text_input("Ref No", key="ref_no_val")
         subject = st.text_input("Subject", value="OFFER FOR CABLES / ELECTRICAL GOODS")
     with c2:
@@ -452,6 +475,7 @@ else:
     
     st.markdown("#### Terms & Conditions (Editable)")
     tc1, tc2, tc3 = st.columns(3)
+    # Linked via keys to allow auto-updating
     p_term = tc1.text_input("Price Term", key='p_term')
     g_term = tc2.text_input("GST Term", key='g_term')
     d_term = tc3.text_input("Delivery", key='d_term')
@@ -461,6 +485,10 @@ else:
     pay_term = tc5.text_input("Payment", key='pay_term')
     val_term = tc6.text_input("Validity", key='val_term')
     guarantee = st.text_input("Guarantee", key='guar_term')
+
+    if st.button("🔄 Reset Terms to Defaults"):
+        update_defaults()
+        st.rerun()
 
     if st.button("📥 Download Word Document", type="primary"):
         if not client_name:
