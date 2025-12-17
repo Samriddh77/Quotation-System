@@ -45,9 +45,9 @@ FIRM_DEFAULTS = {
         "payment": "30% Advance", "validity": "15 Days", "guarantee": "12 Months"
     },
     "Shree Creative Marketing": {
-        "prefix": "SCM/QTN", "price": "Nett", "gst": "18% Extra",
-        "delivery": "Immediate", "freight": "P&F: NIL | F.O.R: Ex Indore",
-        "payment": "30% Advance", "validity": "5 Days", "guarantee": "12 Months"
+        "prefix": "SCM/QTN", "price": "Nett", "gst": "Inclusive",
+        "delivery": "Immediate", "freight": "Paid by us",
+        "payment": "COD", "validity": "5 Days", "guarantee": "Standard"
     }
 }
 
@@ -186,16 +186,18 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         # Column Ratios (Added new columns here)
         col_ratios = {
             "S.No.": 5, 
-            "Sub Category": 12, 
-            "Item Description": 35, 
-            "Make": 10, 
-            "Qty": 8, 
-            "Unit": 8, 
-            "Discount %": 8,       # NEW
-            "Rate": 10, 
-            "Rate (Inc. GST)": 11, # NEW
-            "Amount": 12,
-            "Amount (Inc. GST)": 13 # NEW
+            "Sub Category": 10, 
+            "Item Description": 30, 
+            "Make": 8, 
+            "Qty": 6, 
+            "Unit": 6, 
+            "List Price": 9,       # NEW
+            "Discount %": 7,       
+            "Rate": 9, 
+            "Rate (Inc. GST)": 10, 
+            "Remark": 10,          # NEW
+            "Amount": 10,
+            "Amount (Inc. GST)": 11
         }
         active_headers = [h for h in visible_cols if h in col_ratios]
         
@@ -220,7 +222,7 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             cell.paragraphs[0].runs[0].bold = True
 
         total_amt = 0
-        total_amt_inc_gst = 0 # Track total with GST
+        total_amt_inc_gst = 0 
         
         for i, item in enumerate(cart_items):
             row_cells = table.add_row().cells
@@ -232,7 +234,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             total_amt += line_total
             
             # --- CALCULATE EXTRA COLUMNS ---
-            # Assuming 18% GST standard for the calculated columns
             gst_multiplier = 1.18 
             rate_inc_gst = net_rate * gst_multiplier
             line_total_inc_gst = line_total * gst_multiplier
@@ -252,15 +253,17 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                 "Rate": f"{net_rate:,.2f}", 
                 "Amount": f"{line_total:,.2f}",
                 # NEW COLUMNS MAPPING
+                "List Price": f"{lp:,.2f}",
                 "Discount %": f"{disc:.2f}%" if disc > 0 else "0%",
                 "Rate (Inc. GST)": f"{rate_inc_gst:,.2f}",
-                "Amount (Inc. GST)": f"{line_total_inc_gst:,.2f}"
+                "Amount (Inc. GST)": f"{line_total_inc_gst:,.2f}",
+                "Remark": item.get('Remark', '')
             }
             
             for idx, header in enumerate(active_headers):
                 cell = row_cells[idx]
                 cell.text = data_map.get(header, "")
-                if header in ["Qty", "Rate", "Amount", "Rate (Inc. GST)", "Amount (Inc. GST)", "Discount %"]: 
+                if header in ["Qty", "Rate", "Amount", "List Price", "Rate (Inc. GST)", "Amount (Inc. GST)", "Discount %"]: 
                     cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 elif header in ["S.No.", "Unit", "Make"]: 
                     cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -268,18 +271,13 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                     cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
         # Total Row logic
-        # We need to decide which total to show based on columns selected
-        # If "Amount (Inc. GST)" is visible, we show that total. 
-        # If "Amount" is visible, we show that total.
-        
-        # Helper to print total row
         def add_total_row_value(row, header_name, value, label_text):
              if header_name in active_headers:
                 amt_idx = active_headers.index(header_name)
                 # Find a cell to the left for the label
                 label_idx = max(0, amt_idx - 1)
                 
-                # Only write label if the cell is empty (to avoid overwriting if two totals are side-by-side)
+                # Only write label if the cell is empty 
                 if not row[label_idx].text:
                     row[label_idx].text = label_text
                     row[label_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -380,65 +378,109 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("1. Add Item")
-    if not catalog.empty:
-        cats = sorted(catalog['Main Category'].unique())
-        sel_cat = st.selectbox("Category", cats)
-        sub_cats = sorted(catalog[catalog['Main Category'] == sel_cat]['Sub Category'].unique())
-        sel_sub = st.selectbox("Sub Category", sub_cats)
-        
-        subset = catalog[(catalog['Main Category'] == sel_cat) & (catalog['Sub Category'] == sel_sub)]
-        prods = sorted(subset['Description'].unique())
-        sel_prod = st.selectbox("Product", prods)
-        
-        # Fetch Data for Selected Product
-        row = subset[subset['Description'] == sel_prod].iloc[0]
-        std_price = row['List Price']
-        std_disc = row['Standard Discount']
-        uom_raw = row['UOM']
-        coil_len = row['Coil Length']
-        
-        st.info(f"Price: {std_price} / {uom_raw} | Discount: {std_disc}%")
-        if coil_len > 0:
-            st.caption(f"ℹ️ Standard Coil Length: {coil_len} {uom_raw}")
-        
-        # --- QUANTITY LOGIC ---
-        calc_qty = 0
-        disp_unit = uom_raw
-        
-        # If Coil Length exists and UOM is Meter (e.g. Wires), show toggle
-        if coil_len > 0 and "MTR" in str(uom_raw).upper():
-            mode = st.radio("Input Mode", ["Coils", "Meters"], horizontal=True)
-            if mode == "Coils":
-                n = st.number_input("No. of Coils", 1, 500)
-                calc_qty = n * coil_len
-                disp_unit = "Mtr" 
-            else:
-                calc_qty = st.number_input("Total Meters", 1.0, 10000.0)
-                disp_unit = "Mtr"
-        else:
-            if any(x in str(uom_raw).upper() for x in ["PC", "NO", "SET"]):
-                calc_qty = st.number_input(f"Qty ({uom_raw})", 1, 10000)
-            else:
-                calc_qty = st.number_input(f"Qty ({uom_raw})", 1.0, 10000.0)
+    
+    # NEW: Toggle for Manual vs Catalog
+    add_source = st.radio("Source:", ["From Catalog", "Custom Item (Manual)"], horizontal=True)
 
-        c1, c2 = st.columns(2)
-        disc = c1.number_input("Disc %", 0.0, 100.0, float(std_disc))
-        make = c2.text_input("Make")
+    if add_source == "From Catalog":
+        if not catalog.empty:
+            cats = sorted(catalog['Main Category'].unique())
+            sel_cat = st.selectbox("Category", cats)
+            sub_cats = sorted(catalog[catalog['Main Category'] == sel_cat]['Sub Category'].unique())
+            sel_sub = st.selectbox("Sub Category", sub_cats)
+            
+            subset = catalog[(catalog['Main Category'] == sel_cat) & (catalog['Sub Category'] == sel_sub)]
+            prods = sorted(subset['Description'].unique())
+            sel_prod = st.selectbox("Product", prods)
+            
+            # Fetch Data for Selected Product
+            row = subset[subset['Description'] == sel_prod].iloc[0]
+            std_price = row['List Price']
+            std_disc = row['Standard Discount']
+            uom_raw = row['UOM']
+            coil_len = row['Coil Length']
+            
+            st.info(f"Price: {std_price} / {uom_raw} | Discount: {std_disc}%")
+            if coil_len > 0:
+                st.caption(f"ℹ️ Standard Coil Length: {coil_len} {uom_raw}")
+            
+            # --- QUANTITY LOGIC ---
+            calc_qty = 0
+            disp_unit = uom_raw
+            
+            # If Coil Length exists and UOM is Meter (e.g. Wires), show toggle
+            if coil_len > 0 and "MTR" in str(uom_raw).upper():
+                mode = st.radio("Input Mode", ["Coils", "Meters"], horizontal=True)
+                if mode == "Coils":
+                    n = st.number_input("No. of Coils", 1, 500)
+                    calc_qty = n * coil_len
+                    disp_unit = "Mtr" 
+                else:
+                    calc_qty = st.number_input("Total Meters", 1.0, 10000.0)
+                    disp_unit = "Mtr"
+            else:
+                if any(x in str(uom_raw).upper() for x in ["PC", "NO", "SET"]):
+                    calc_qty = st.number_input(f"Qty ({uom_raw})", 1, 10000)
+                else:
+                    calc_qty = st.number_input(f"Qty ({uom_raw})", 1.0, 10000.0)
+
+            c1, c2 = st.columns(2)
+            disc = c1.number_input("Disc %", 0.0, 100.0, float(std_disc))
+            make = c2.text_input("Make")
+            
+            # NEW: Remark
+            remark = st.text_input("Remark (Optional)")
+            
+            if st.button("Add Catalog Item"):
+                if not make.strip():
+                    st.error("⚠️ The 'Make' field is mandatory!")
+                else:
+                    st.session_state['cart'].append({
+                        'Main Category': sel_cat, 'Sub Category': sel_sub,
+                        'Description': sel_prod, 'Make': make,
+                        'Qty': calc_qty, 'Display Unit': disp_unit,
+                        'List Price': std_price, 'Discount': disc,
+                        'Sub Category': sel_sub,
+                        'Remark': remark # NEW
+                    })
+                    st.success("Added")
+        else:
+            st.warning("Please add an Excel file to the 'data' folder.")
+    
+    else:
+        # --- MANUAL ITEM ENTRY ---
+        st.markdown("### Manual Entry Details")
+        m_desc = st.text_input("Item Description")
+        m_sub = st.text_input("Sub Category (Optional)", value="General")
         
-        if st.button("Add"):
-            if not make.strip():
-                st.error("⚠️ The 'Make' field is mandatory!")
+        col_m1, col_m2 = st.columns(2)
+        m_price = col_m1.number_input("List Price", min_value=0.0, step=0.01)
+        m_unit = col_m2.text_input("Unit (UOM)", value="Pc")
+        
+        col_m3, col_m4 = st.columns(2)
+        m_qty = col_m3.number_input("Quantity", min_value=1.0, step=1.0)
+        m_disc = col_m4.number_input("Discount %", 0.0, 100.0, 0.0)
+        
+        m_make = st.text_input("Make (Brand)")
+        m_remark = st.text_input("Remark (Optional)")
+        
+        if st.button("Add Custom Item"):
+            if not m_desc.strip():
+                st.error("Description is required!")
+            elif not m_make.strip():
+                st.error("Make is required!")
+            elif m_price <= 0:
+                st.error("Price must be greater than 0")
             else:
                 st.session_state['cart'].append({
-                    'Main Category': sel_cat, 'Sub Category': sel_sub,
-                    'Description': sel_prod, 'Make': make,
-                    'Qty': calc_qty, 'Display Unit': disp_unit,
-                    'List Price': std_price, 'Discount': disc,
-                    'Sub Category': sel_sub
+                    'Main Category': 'Custom', 'Sub Category': m_sub,
+                    'Description': m_desc, 'Make': m_make,
+                    'Qty': m_qty, 'Display Unit': m_unit,
+                    'List Price': m_price, 'Discount': m_disc,
+                    'Sub Category': m_sub,
+                    'Remark': m_remark
                 })
-                st.success("Added")
-    else:
-        st.warning("Please add an Excel file to the 'data' folder.")
+                st.success("Custom Item Added")
             
     if st.button("Clear Cart"): st.session_state['cart'] = []; st.rerun()
 
@@ -463,8 +505,14 @@ else:
         
         c1, c2, c3, c4, c5, c6, c7 = st.columns(col_config)
         c1.write(f"{i+1}")
-        c2.write(item['Description'])
-        c3.write(f"{item['Make']} Make")
+        
+        # Display Desc + Remark if exists
+        desc_display = item['Description']
+        if item.get('Remark'):
+            desc_display += f" ({item['Remark']})"
+            
+        c2.write(desc_display)
+        c3.write(f"{item['Make']}")
         
         # Display Format
         qty_str = format_qty(item['Qty'], item['Display Unit'])
@@ -498,10 +546,10 @@ else:
     )
     
     st.markdown("##### Table Settings")
-    # UPDATED: Added new optional columns
+    # UPDATED: Added new optional columns including List Price and Remark
     all_cols = [
         "S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", 
-        "Rate", "Discount %", "Rate (Inc. GST)", "Amount", "Amount (Inc. GST)"
+        "List Price", "Discount %", "Rate", "Rate (Inc. GST)", "Amount", "Amount (Inc. GST)", "Remark"
     ]
     # Default selection keeps it simple (User can check the others)
     default_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
