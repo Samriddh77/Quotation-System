@@ -346,16 +346,22 @@ with st.sidebar:
         calc_qty = st.number_input(f"Qty ({uom})", 1, 10000)
         c1, c2 = st.columns(2)
         disc = c1.number_input("Disc %", 0.0, 100.0, 0.0)
-        make = c2.text_input("Make (e.g. HMI)")
+        
+        # --- MODIFIED MAKE INPUT ---
+        make = c2.text_input("Make") # Blank label, no default value
         
         if st.button("Add"):
-            st.session_state['cart'].append({
-                'Main Category': sel_cat, 'Sub Category': sel_sub,
-                'Description': sel_prod, 'Make': make,
-                'Qty': calc_qty, 'Display Unit': uom,
-                'List Price': std_price, 'Discount': disc
-            })
-            st.success("Added")
+            # --- VALIDATION LOGIC ---
+            if not make.strip():
+                st.error("⚠️ The 'Make' field is mandatory!")
+            else:
+                st.session_state['cart'].append({
+                    'Main Category': sel_cat, 'Sub Category': sel_sub,
+                    'Description': sel_prod, 'Make': make,
+                    'Qty': calc_qty, 'Display Unit': uom,
+                    'List Price': std_price, 'Discount': disc
+                })
+                st.success("Added")
     else:
         st.warning("Please add an Excel file to the 'data' folder.")
             
@@ -399,7 +405,6 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         client_name = st.text_input("Client Name", placeholder="M/s Client Name")
-        # --- KEY CHANGE: LINK REF_NO TO SESSION STATE ---
         ref_no = st.text_input("Ref No", key="ref_no_val") 
         subject = st.text_input("Subject", value="OFFER FOR ELECTRICAL GOODS")
     with c2:
