@@ -19,6 +19,8 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+# --- OUTPUT DIRECTORY FOR LOCAL SAVING ---
+OUTPUT_DIR = os.path.join(BASE_DIR, 'Generated_Quotes')
 
 FIRM_MAPPING = {
     "Electro World": "Electro_Template.docx",
@@ -29,6 +31,7 @@ FIRM_MAPPING = {
 # --- 2. FOLDER SETUP ---
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
+if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR) # Create Output Folder
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
@@ -163,10 +166,8 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
     }
 
-    # Replace in Paragraphs & Tables
     safe_replace_text(doc, replacements)
 
-    # Insert Table at {{TABLE_HERE}}
     target_paragraph = None
     for paragraph in doc.paragraphs:
         if '{{TABLE_HERE}}' in paragraph.text:
@@ -175,8 +176,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             
     if target_paragraph:
         target_paragraph.text = "" 
-        
-        # Column Ratios
         col_ratios = {"S.No.": 5, "Sub Category": 12, "Item Description": 35, "Make": 10, "Qty": 8, "Unit": 8, "Rate": 10, "Amount": 12}
         active_headers = [h for h in visible_cols if h in col_ratios]
         
@@ -184,16 +183,13 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         table.autofit = False
         table.allow_autofit = False
         
-        # Set Table Width to 100%
         tblPr = table._tbl.tblPr
         tblW = OxmlElement('w:tblW')
         tblW.set(qn('w:w'), '5000') 
         tblW.set(qn('w:type'), 'pct')
         tblPr.append(tblW)
-        
         set_table_borders(table)
         
-        # Header
         for i, text in enumerate(active_headers):
             cell = table.rows[0].cells[i]
             cell.text = text
@@ -228,7 +224,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                 elif header in ["S.No.", "Unit", "Make"]: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 else: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        # Total Row
         if "Amount" in active_headers:
             row = table.add_row().cells
             amt_idx = active_headers.index("Amount")
@@ -254,16 +249,11 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
 # --- DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
-    # Use Dynamic Path for Data Directory
-    if not os.path.exists(DATA_DIR):
-        return pd.DataFrame(), [f"❌ Data folder not found at: {DATA_DIR}"]
+    if not os.path.exists(DATA_DIR): return pd.DataFrame(), [f"❌ Data folder not found at: {DATA_DIR}"]
 
     all_dfs = []
     logs = []
-    
-    excel_files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) 
-                   if f.lower().endswith(".xlsx") and not f.startswith("~$")]
-    
+    excel_files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f.lower().endswith(".xlsx") and not f.startswith("~$")]
     if not excel_files: return pd.DataFrame(), ["❌ No .xlsx files found in data folder!"]
 
     for file_path in excel_files:
@@ -276,10 +266,6 @@ def load_data_from_files():
                     df = pd.read_excel(xls, sheet)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # --- UPDATED: EXACT COLUMN MATCHING ---
-                    # Based on your file structure: Item Description, List Price, Standard Discount, Coil Length (Mtr), UOM
-                    
-                    # 1. Identify Columns
                     name_col = next((c for c in df.columns if "Item Description" == c), None)
                     price_col = next((c for c in df.columns if "List Price" == c), None)
                     disc_col = next((c for c in df.columns if "Standard Discount" == c), None)
@@ -290,27 +276,11 @@ def load_data_from_files():
                         clean_df = pd.DataFrame()
                         clean_df['Description'] = df[name_col].astype(str)
                         clean_df['List Price'] = df[price_col].apply(clean_price_value)
-                        
-                        # Load Discount
-                        if disc_col:
-                            clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
-                        else:
-                            clean_df['Standard Discount'] = 0.0
-
-                        # Load Coil Length
-                        if coil_col:
-                            clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len)
-                        else:
-                            clean_df['Coil Length'] = 0.0
-
+                        clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0) if disc_col else 0.0
+                        clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len) if coil_col else 0.0
                         clean_df['Main Category'] = main_cat
                         clean_df['Sub Category'] = sheet
-                        
-                        # Load UOM
-                        if uom_col:
-                            clean_df['UOM'] = df[uom_col].astype(str)
-                        else:
-                            clean_df['UOM'] = detect_uom(sheet, price_col)
+                        clean_df['UOM'] = df[uom_col].astype(str) if uom_col else detect_uom(sheet, price_col)
 
                         clean_df = clean_df[clean_df['List Price'] > 0]
                         all_dfs.append(clean_df)
@@ -324,7 +294,6 @@ def load_data_from_files():
 catalog, logs = load_data_from_files()
 if 'cart' not in st.session_state: st.session_state['cart'] = []
 
-# SIDEBAR
 with st.sidebar:
     st.title("🔧 Config")
     if st.button("🔄 Refresh Data"): st.cache_data.clear(); st.rerun()
@@ -341,7 +310,6 @@ with st.sidebar:
         prods = sorted(subset['Description'].unique())
         sel_prod = st.selectbox("Product", prods)
         
-        # Fetch Data for Selected Product
         row = subset[subset['Description'] == sel_prod].iloc[0]
         std_price = row['List Price']
         std_disc = row['Standard Discount']
@@ -349,33 +317,27 @@ with st.sidebar:
         coil_len = row['Coil Length']
         
         st.info(f"Price: {std_price} / {uom_raw} | Discount: {std_disc}%")
-        if coil_len > 0:
-            st.caption(f"ℹ️ Standard Coil Length: {coil_len} {uom_raw}")
+        if coil_len > 0: st.caption(f"ℹ️ Standard Coil Length: {coil_len} {uom_raw}")
         
-        # --- QUANTITY LOGIC ---
         calc_qty = 0
         disp_unit = uom_raw
         
-        # If Coil Length exists and UOM is Meter (e.g. Wires), show toggle
         if coil_len > 0 and "MTR" in str(uom_raw).upper():
             mode = st.radio("Input Mode", ["Coils", "Meters"], horizontal=True)
             if mode == "Coils":
                 n = st.number_input("No. of Coils", 1, 500)
                 calc_qty = n * coil_len
-                # Keep unit as Mtr for price calc, but maybe note coils in cart
                 disp_unit = "Mtr" 
             else:
                 calc_qty = st.number_input("Total Meters", 1.0, 10000.0)
                 disp_unit = "Mtr"
         else:
-            # Standard Items (Glands, Cables without fixed coil len)
             if any(x in str(uom_raw).upper() for x in ["PC", "NO", "SET"]):
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1, 10000)
             else:
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1.0, 10000.0)
 
         c1, c2 = st.columns(2)
-        # Pre-fill discount with value from Excel
         disc = c1.number_input("Disc %", 0.0, 100.0, float(std_disc))
         make = c2.text_input("Make")
         
@@ -388,7 +350,7 @@ with st.sidebar:
                     'Description': sel_prod, 'Make': make,
                     'Qty': calc_qty, 'Display Unit': disp_unit,
                     'List Price': std_price, 'Discount': disc,
-                    'Sub Category': sel_sub # Ensure this is saved
+                    'Sub Category': sel_sub
                 })
                 st.success("Added")
     else:
@@ -396,13 +358,11 @@ with st.sidebar:
             
     if st.button("Clear Cart"): st.session_state['cart'] = []; st.rerun()
 
-# MAIN PAGE
 st.title("📄 Quotation System")
 
 if not st.session_state['cart']:
     st.info("Add items to start.")
 else:
-    # TABLE
     st.subheader("1. Item List")
     col_config = [0.5, 3.5, 1.5, 1.5, 1.2, 1.5, 0.5]
     h1, h2, h3, h4, h5, h6, h7 = st.columns(col_config)
@@ -414,17 +374,9 @@ else:
         net = item['List Price'] * (1 - item['Discount']/100)
         tot = net * item['Qty']
         grand_tot += tot
-        
         c1, c2, c3, c4, c5, c6, c7 = st.columns(col_config)
-        c1.write(f"{i+1}")
-        c2.write(item['Description'])
-        c3.write(f"{item['Make']} Make")
-        
-        # Display Format
-        qty_str = format_qty(item['Qty'], item['Display Unit'])
-        c4.write(qty_str)
-        c5.write(item['Display Unit'])
-        c6.write(f"₹ {tot:,.0f}")
+        c1.write(f"{i+1}"); c2.write(item['Description']); c3.write(f"{item['Make']} Make")
+        c4.write(format_qty(item['Qty'], item['Display Unit'])); c5.write(item['Display Unit']); c6.write(f"₹ {tot:,.0f}")
         if c7.button("🗑️", key=f"d{i}"):
             st.session_state['cart'].pop(i)
             st.rerun()
@@ -433,9 +385,7 @@ else:
     st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
     st.markdown("---")
 
-    # GENERATOR FORM
     st.subheader("2. Generate Official Quotation")
-    
     selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
     
     st.markdown("##### Table Settings")
@@ -450,42 +400,59 @@ else:
     with c2:
         client_address = st.text_area("Client Address", placeholder="Address Line 1\nCity, State")
     
-    st.markdown("#### Terms & Conditions (Editable)")
+    st.markdown("#### Terms & Conditions")
     tc1, tc2, tc3 = st.columns(3)
     p_term = tc1.text_input("Price Term", key='p_term')
     g_term = tc2.text_input("GST Term", key='g_term')
     d_term = tc3.text_input("Delivery", key='d_term')
-    
     tc4, tc5, tc6 = st.columns(3)
     f_term = tc4.text_input("Freight", key='f_term')
     pay_term = tc5.text_input("Payment", key='pay_term')
     val_term = tc6.text_input("Validity", key='val_term')
     guarantee = st.text_input("Guarantee", key='guar_term')
 
-    if st.button("📥 Download Word Document", type="primary"):
-        if not client_name:
-            st.error("Please enter Client Name.")
-        else:
-            client_data = {
-                "client_name": client_name, "client_address": client_address,
-                "ref_no": ref_no, "subject": subject
-            }
-            terms = {
-                "price_term": p_term, "gst_term": g_term, "delivery_term": d_term,
-                "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term,
-                "guarantee_term": guarantee
-            }
-            
-            template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
-            
-            if not os.path.exists(template_path):
-                 st.error(f"❌ Template not found: {template_path}. Please upload it to the 'templates' folder.")
+    # --- ACTION BUTTONS ---
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        if st.button("📥 Download Word Document", type="primary"):
+            if not client_name: st.error("Please enter Client Name.")
             else:
-                docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                client_data = {"client_name": client_name, "client_address": client_address, "ref_no": ref_no, "subject": subject}
+                terms = {"price_term": p_term, "gst_term": g_term, "delivery_term": d_term, "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term, "guarantee_term": guarantee}
+                template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
                 
-                st.download_button(
-                    label=f"Download Quote for {selected_firm}",
-                    data=docx_file,
-                    file_name=f"Quote_{selected_firm.replace(' ','_')}_{client_name[:5]}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+                if not os.path.exists(template_path): st.error(f"❌ Template not found: {template_path}")
+                else:
+                    docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                    st.download_button(
+                        label=f"Download Quote for {selected_firm}",
+                        data=docx_file,
+                        file_name=f"Quote_{selected_firm.replace(' ','_')}_{client_name[:5]}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+
+    # --- SAVE LOCALLY BUTTON ---
+    with col_btn2:
+        if st.button("💾 Save to 'Generated_Quotes' Folder"):
+            if not client_name: st.error("Please enter Client Name.")
+            else:
+                client_data = {"client_name": client_name, "client_address": client_address, "ref_no": ref_no, "subject": subject}
+                terms = {"price_term": p_term, "gst_term": g_term, "delivery_term": d_term, "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term, "guarantee_term": guarantee}
+                template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
+                
+                if not os.path.exists(template_path): st.error(f"❌ Template not found.")
+                else:
+                    docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                    
+                    # Generate Unique Filename
+                    safe_client = re.sub(r'[^\w\-_\. ]', '_', client_name)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"{selected_firm.replace(' ','_')}_{safe_client}_{timestamp}.docx"
+                    save_path = os.path.join(OUTPUT_DIR, filename)
+                    
+                    # Write File
+                    with open(save_path, "wb") as f:
+                        f.write(docx_file.getbuffer())
+                    
+                    st.success(f"✅ Saved successfully!\n\n**Path:** `{save_path}`")
