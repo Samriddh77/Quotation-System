@@ -107,23 +107,20 @@ def detect_uom(sheet_name, price_col_name):
 
 # --- WORD GENERATOR UTILS ---
 def set_table_borders(table):
-    """ Force proper grid borders on the table using low-level XML """
+    """ Force proper grid borders using XML """
     tbl = table._tbl
     tblPr = tbl.tblPr
-    
-    # Check if tblBorders exists, if not create it
     tblBorders = tblPr.first_child_found_in("w:tblBorders")
     if tblBorders is None:
         tblBorders = OxmlElement('w:tblBorders')
         tblPr.append(tblBorders)
     
-    # Define borders (top, left, bottom, right, insideH, insideV)
     for border_name in ["top", "left", "bottom", "right", "insideH", "insideV"]:
         border = OxmlElement(f'w:{border_name}')
         border.set(qn('w:val'), 'single')
-        border.set(qn('w:sz'), '4') # Size of line
+        border.set(qn('w:sz'), '4')
         border.set(qn('w:space'), '0')
-        border.set(qn('w:color'), '000000') # Black
+        border.set(qn('w:color'), '000000')
         tblBorders.append(border)
 
 def replace_text_in_paragraph(paragraph, key, value):
@@ -168,9 +165,9 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         target_paragraph.text = "" 
         
         # 1. Define Master Column Config
-        # Keys must match what is used in the loop below
         col_defs = {
             "S.No.": {"width": Cm(1.2), "align": WD_ALIGN_PARAGRAPH.CENTER},
+            "Sub Category": {"width": Cm(3.0), "align": WD_ALIGN_PARAGRAPH.LEFT}, # Added
             "Item Description": {"width": Cm(6.5), "align": WD_ALIGN_PARAGRAPH.LEFT},
             "Make": {"width": Cm(2.5), "align": WD_ALIGN_PARAGRAPH.CENTER},
             "Qty": {"width": Cm(1.5), "align": WD_ALIGN_PARAGRAPH.RIGHT},
@@ -184,9 +181,9 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         
         table = doc.add_table(rows=1, cols=len(active_headers))
         table.autofit = False
-        set_table_borders(table) # FORCE PROPER BORDERS
+        set_table_borders(table) # Force Borders
         
-        # Set Widths and Header Text
+        # Header Row
         for i, header in enumerate(active_headers):
             cell = table.rows[0].cells[i]
             cell.text = header
@@ -200,7 +197,7 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         for i, item in enumerate(cart_items):
             row_cells = table.add_row().cells
             
-            # Prepare Data
+            # Data Calculations
             lp = item['List Price']
             disc = item['Discount']
             qty = item['Qty']
@@ -208,14 +205,15 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             line_total = net_rate * qty
             total_amt += line_total
             
-            # Logic for "Make" -> Append " Make"
+            # "Make" Logic
             make_str = item.get('Make', '').strip()
             if make_str:
                 make_str = f"{make_str} Make"
             
-            # Map Data to Headers
+            # Map Data
             data_map = {
                 "S.No.": str(i+1),
+                "Sub Category": item.get('Sub Category', ''),
                 "Item Description": item['Description'],
                 "Make": make_str,
                 "Qty": f"{qty:,.2f}",
@@ -231,20 +229,33 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                 cell.width = col_defs[header]["width"]
                 cell.paragraphs[0].alignment = col_defs[header]["align"]
 
-        # Total Row (only if Amount is visible)
+        # --- GRAND TOTAL ROW ---
         if "Amount" in active_headers:
             row = table.add_row().cells
-            # Find index of description or first logical text column
-            desc_idx = active_headers.index("Item Description") if "Item Description" in active_headers else 0
+            
+            # Find the index of Amount
             amt_idx = active_headers.index("Amount")
             
-            row[desc_idx].text = "Total (Excl. GST)"
-            row[desc_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            row[desc_idx].paragraphs[0].runs[0].bold = True
+            # Determine where to put the label (One column to the left of Amount)
+            label_idx = amt_idx - 1 if amt_idx > 0 else 0
             
-            row[amt_idx].text = f"{total_amt:,.2f}"
-            row[amt_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            row[amt_idx].paragraphs[0].runs[0].bold = True
+            # Add Label
+            label_cell = row[label_idx]
+            label_cell.text = "Grand Total (Excl. GST)"
+            label_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if label_cell.paragraphs[0].runs:
+                label_cell.paragraphs[0].runs[0].bold = True
+            else:
+                label_cell.paragraphs[0].add_run("Grand Total (Excl. GST)").bold = True
+
+            # Add Total Value
+            val_cell = row[amt_idx]
+            val_cell.text = f"{total_amt:,.2f}"
+            val_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if val_cell.paragraphs[0].runs:
+                val_cell.paragraphs[0].runs[0].bold = True
+            else:
+                val_cell.paragraphs[0].add_run(f"{total_amt:,.2f}").bold = True
 
         target_paragraph._p.addnext(table._tbl)
 
@@ -375,9 +386,10 @@ else:
     
     selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
     
-    # --- NEW: SELECT COLUMNS ---
+    # --- TABLE SETTINGS ---
     st.markdown("##### Table Settings")
-    all_cols = ["S.No.", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
+    # Define available columns (Order matters)
+    all_cols = ["S.No.", "Sub Category", "Item Description", "Make", "Qty", "Unit", "Rate", "Amount"]
     visible_cols = st.multiselect("Columns to include in Word Doc", all_cols, default=all_cols)
     
     c1, c2 = st.columns(2)
