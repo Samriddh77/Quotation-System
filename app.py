@@ -17,14 +17,19 @@ except ImportError:
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
 
-# 1. FILE MAPPING
+# 1. SETUP PATHS (Dynamic - works on any PC)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+
+# 2. FILE MAPPING (Just filenames)
 FIRM_MAPPING = {
-    "Electro World": "C:\\Users\\ASUSS\\Desktop\\quotation-system\\templates\\Electro_Template.docx",
-    "Abhinav Enterprises": "C:\\Users\\ASUSS\\Desktop\\quotation-system\\templates\\Abhinav_Template.docx",
+    "Electro World": "Electro_Template.docx",
+    "Abhinav Enterprises": "Abhinav_Template.docx",
     "Shree Creative Marketing": "Shree_Template.docx"
 }
 
-# 2. DEFAULT TERMS
+# 3. DEFAULT TERMS
 FIRM_DEFAULTS = {
     "Electro World": {
         "price": "Nett",
@@ -55,9 +60,8 @@ FIRM_DEFAULTS = {
     }
 }
 
-# --- STATE MANAGEMENT (FIXED) ---
+# --- STATE MANAGEMENT ---
 def update_defaults():
-    # Use .get() to avoid KeyError if widget isn't rendered yet
     firm = st.session_state.get('firm_selector', "Electro World")
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
     
@@ -69,11 +73,9 @@ def update_defaults():
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
 
-# Initialize 'firm_selector' BEFORE the widget is created
 if 'firm_selector' not in st.session_state:
     st.session_state['firm_selector'] = "Electro World"
 
-# Load initial defaults
 if 'p_term' not in st.session_state:
     update_defaults()
 
@@ -204,17 +206,17 @@ def fill_template_docx(template_path, client_data, cart_items, terms):
 # --- DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
-    search_dirs = ['.', 'data'] 
+    # Use Dynamic Path for Data Directory
+    if not os.path.exists(DATA_DIR):
+        return pd.DataFrame(), [f"❌ Data folder not found at: {DATA_DIR}"]
+
     all_dfs = []
     logs = []
-    excel_files = []
-    for d in search_dirs:
-        if os.path.exists(d):
-            files = [os.path.join(d, f) for f in os.listdir(d) 
-                     if f.lower().endswith(".xlsx") and not f.startswith("~$")]
-            excel_files.extend(files)
     
-    if not excel_files: return pd.DataFrame(), ["❌ No .xlsx files found!"]
+    excel_files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) 
+                   if f.lower().endswith(".xlsx") and not f.startswith("~$")]
+    
+    if not excel_files: return pd.DataFrame(), ["❌ No .xlsx files found in data folder!"]
 
     for file_path in excel_files:
         filename = os.path.basename(file_path)
@@ -326,7 +328,7 @@ with st.sidebar:
     if st.button("Clear Cart"): st.session_state['cart'] = []; st.rerun()
 
 # MAIN PAGE
-st.title("📄 Quotation ")
+st.title("📄 Quotation System")
 
 if not st.session_state['cart']:
     st.info("Add items to start.")
@@ -364,9 +366,11 @@ else:
     # FIRM SELECTOR - UPDATES DEFAULTS
     selected_firm = st.selectbox("Select Template (Firm)", list(FIRM_MAPPING.keys()), key="firm_selector", on_change=update_defaults)
     
-    template_path = os.path.join("templates", FIRM_MAPPING[selected_firm])
+    # Use Dynamic Path join
+    template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
+    
     if not os.path.exists(template_path):
-        st.error(f"⚠️ Template '{template_path}' not found! Create it in 'templates' folder.")
+        st.error(f"⚠️ Template not found: {template_path}")
     else:
         st.success(f"✅ Active Template: {FIRM_MAPPING[selected_firm]}")
     
@@ -418,4 +422,3 @@ else:
                 file_name=f"Quote_{selected_firm.replace(' ','_')}_{client_name[:5]}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
-            #12456789087654567890876567
