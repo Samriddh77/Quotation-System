@@ -19,8 +19,8 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'Generated_Quotes')
 
-# Map Firm Names to Template Files
 FIRM_MAPPING = {
     "Electro World": "Electro_Template.docx",
     "Abhinav Enterprises": "Abhinav_Template.docx",
@@ -30,6 +30,7 @@ FIRM_MAPPING = {
 # --- 2. FOLDER SETUP ---
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
+if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
@@ -53,10 +54,15 @@ FIRM_DEFAULTS = {
     }
 }
 
-# --- STATE MANAGEMENT ---
+# --- STATE MANAGEMENT (FIXED) ---
 def update_defaults():
+    # 1. Get current firm from session state, default to Electro World
     firm = st.session_state.get('firm_selector', "Electro World")
+    
+    # 2. Fetch dictionary for that firm
     defaults = FIRM_DEFAULTS.get(firm, FIRM_DEFAULTS["Electro World"])
+    
+    # 3. Force update session state keys
     st.session_state['p_term'] = defaults['price']
     st.session_state['g_term'] = defaults['gst']
     st.session_state['d_term'] = defaults['delivery']
@@ -64,11 +70,20 @@ def update_defaults():
     st.session_state['pay_term'] = defaults['payment']
     st.session_state['val_term'] = defaults['validity']
     st.session_state['guar_term'] = defaults['guarantee']
+    
+    # 4. Update Ref No
     date_str = datetime.now().strftime('%y%m%d')
     st.session_state['ref_no_val'] = f"{defaults['prefix']}/{date_str}/001"
 
-if 'firm_selector' not in st.session_state: st.session_state['firm_selector'] = "Electro World"
-if 'p_term' not in st.session_state: update_defaults()
+# --- AGGRESSIVE INITIALIZATION ---
+# This ensures defaults are loaded ONCE when the app starts
+if 'firm_selector' not in st.session_state:
+    st.session_state['firm_selector'] = "Electro World"
+    update_defaults()
+
+# Also check if terms are missing (double safety)
+if 'p_term' not in st.session_state:
+    update_defaults()
 
 # --- HELPERS ---
 def clean_price_value(val):
@@ -164,10 +179,8 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
     }
 
-    # Replace in Paragraphs & Tables
     safe_replace_text(doc, replacements)
 
-    # Insert Table at {{TABLE_HERE}}
     target_paragraph = None
     for paragraph in doc.paragraphs:
         if '{{TABLE_HERE}}' in paragraph.text:
@@ -176,8 +189,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             
     if target_paragraph:
         target_paragraph.text = "" 
-        
-        # Column Ratios
         col_ratios = {"S.No.": 5, "Sub Category": 12, "Item Description": 35, "Make": 10, "Qty": 8, "Unit": 8, "Rate": 10, "Amount": 12}
         active_headers = [h for h in visible_cols if h in col_ratios]
         
@@ -185,16 +196,13 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         table.autofit = False
         table.allow_autofit = False
         
-        # Set Table Width to 100%
         tblPr = table._tbl.tblPr
         tblW = OxmlElement('w:tblW')
         tblW.set(qn('w:w'), '5000') 
         tblW.set(qn('w:type'), 'pct')
         tblPr.append(tblW)
-        
         set_table_borders(table)
         
-        # Header
         for i, text in enumerate(active_headers):
             cell = table.rows[0].cells[i]
             cell.text = text
@@ -229,7 +237,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
                 elif header in ["S.No.", "Unit", "Make"]: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 else: cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        # Total Row
         if "Amount" in active_headers:
             row = table.add_row().cells
             amt_idx = active_headers.index("Amount")
@@ -255,7 +262,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
 # --- DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
-    # Use Dynamic Path for Data Directory
     if not os.path.exists(DATA_DIR):
         return pd.DataFrame(), [f"❌ Data folder not found at: {DATA_DIR}"]
 
@@ -277,7 +283,6 @@ def load_data_from_files():
                     df = pd.read_excel(xls, sheet)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # 1. Identify Columns
                     name_col = next((c for c in df.columns if "Item Description" == c), None)
                     price_col = next((c for c in df.columns if "List Price" == c), None)
                     disc_col = next((c for c in df.columns if "Standard Discount" == c), None)
@@ -289,13 +294,11 @@ def load_data_from_files():
                         clean_df['Description'] = df[name_col].astype(str)
                         clean_df['List Price'] = df[price_col].apply(clean_price_value)
                         
-                        # Load Discount
                         if disc_col:
                             clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
                         else:
                             clean_df['Standard Discount'] = 0.0
 
-                        # Load Coil Length
                         if coil_col:
                             clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len)
                         else:
@@ -304,7 +307,6 @@ def load_data_from_files():
                         clean_df['Main Category'] = main_cat
                         clean_df['Sub Category'] = sheet
                         
-                        # Load UOM
                         if uom_col:
                             clean_df['UOM'] = df[uom_col].astype(str)
                         else:
@@ -339,7 +341,6 @@ with st.sidebar:
         prods = sorted(subset['Description'].unique())
         sel_prod = st.selectbox("Product", prods)
         
-        # Fetch Data for Selected Product
         row = subset[subset['Description'] == sel_prod].iloc[0]
         std_price = row['List Price']
         std_disc = row['Standard Discount']
@@ -350,30 +351,25 @@ with st.sidebar:
         if coil_len > 0:
             st.caption(f"ℹ️ Standard Coil Length: {coil_len} {uom_raw}")
         
-        # --- QUANTITY LOGIC ---
         calc_qty = 0
         disp_unit = uom_raw
         
-        # If Coil Length exists and UOM is Meter (e.g. Wires), show toggle
         if coil_len > 0 and "MTR" in str(uom_raw).upper():
             mode = st.radio("Input Mode", ["Coils", "Meters"], horizontal=True)
             if mode == "Coils":
                 n = st.number_input("No. of Coils", 1, 500)
                 calc_qty = n * coil_len
-                # Keep unit as Mtr for price calc, but maybe note coils in cart
                 disp_unit = "Mtr" 
             else:
                 calc_qty = st.number_input("Total Meters", 1.0, 10000.0)
                 disp_unit = "Mtr"
         else:
-            # Standard Items (Glands, Cables without fixed coil len)
             if any(x in str(uom_raw).upper() for x in ["PC", "NO", "SET"]):
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1, 10000)
             else:
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1.0, 10000.0)
 
         c1, c2 = st.columns(2)
-        # Pre-fill discount with value from Excel
         disc = c1.number_input("Disc %", 0.0, 100.0, float(std_disc))
         make = c2.text_input("Make")
         
@@ -386,7 +382,7 @@ with st.sidebar:
                     'Description': sel_prod, 'Make': make,
                     'Qty': calc_qty, 'Display Unit': disp_unit,
                     'List Price': std_price, 'Discount': disc,
-                    'Sub Category': sel_sub # Ensure this is saved
+                    'Sub Category': sel_sub
                 })
                 st.success("Added")
     else:
@@ -418,7 +414,6 @@ else:
         c2.write(item['Description'])
         c3.write(f"{item['Make']} Make")
         
-        # Display Format
         qty_str = format_qty(item['Qty'], item['Display Unit'])
         c4.write(qty_str)
         c5.write(item['Display Unit'])
@@ -460,88 +455,67 @@ else:
     val_term = tc6.text_input("Validity", key='val_term')
     guarantee = st.text_input("Guarantee", key='guar_term')
 
-    st.markdown("---")
-    st.markdown("### 3. Output Options")
+    # --- ACTION BUTTONS ---
+    col_btn1, col_btn2 = st.columns(2)
     
-    # Generate the filename first
-    safe_client = "".join([c for c in client_name if c.isalnum() or c in (' ', '_')]).strip()
-    filename = f"Quote_{selected_firm.replace(' ','_')}_{safe_client[:10]}_{datetime.now().strftime('%d%b')}.docx"
-
-    # --- OPTION A: BROWSER DOWNLOAD (Standard) ---
-    st.write("#### Option A: Download via Browser")
-    if st.button("📥 Generate & Download", type="primary"):
-        if not client_name:
-            st.error("Please enter Client Name.")
-        else:
-            # Prepare Data
-            client_data = {
-                "client_name": client_name, "client_address": client_address,
-                "ref_no": ref_no, "subject": subject
-            }
-            terms = {
-                "price_term": p_term, "gst_term": g_term, "delivery_term": d_term,
-                "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term,
-                "guarantee_term": guarantee
-            }
-            
-            # Generate Logic
-            template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
-            if not os.path.exists(template_path):
-                 st.error(f"❌ Template not found: {template_path}")
+    with col_btn1:
+        if st.button("📥 Download Word Document", type="primary"):
+            if not client_name: st.error("Please enter Client Name.")
             else:
-                docx_buffer = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                client_data = {"client_name": client_name, "client_address": client_address, "ref_no": ref_no, "subject": subject}
+                terms = {"price_term": p_term, "gst_term": g_term, "delivery_term": d_term, "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term, "guarantee_term": guarantee}
+                template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
                 
-                # Trigger Browser Download
-                st.download_button(
-                    label="⬇️ Click here to Download",
-                    data=docx_buffer,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+                if not os.path.exists(template_path): st.error(f"❌ Template not found: {template_path}")
+                else:
+                    docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                    st.download_button(
+                        label=f"Download Quote for {selected_firm}",
+                        data=docx_file,
+                        file_name=f"Quote_{selected_firm.replace(' ','_')}_{client_name[:5]}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
 
-    # --- OPTION B: SAVE TO SPECIFIC LOCAL FOLDER ---
-    st.write("#### Option B: Save to Specific Local Folder")
-    
-    # 1. Input for Custom Path (Default to a folder named 'Generated_Quotes' in your project dir)
-    default_save_path = os.path.join(BASE_DIR, 'Generated_Quotes')
-    save_folder = st.text_input("Target Folder Path", value=default_save_path)
-
-    if st.button("💾 Save to Local Folder"):
-        if not client_name:
-            st.error("Please enter Client Name.")
-        else:
-            # Check if folder exists, if not, create it
-            if not os.path.exists(save_folder):
-                try:
-                    os.makedirs(save_folder)
-                    st.toast(f"Created new folder: {save_folder}")
-                except Exception as e:
-                    st.error(f"Could not create folder: {e}")
-                    st.stop()
-
-            # Prepare Data (Same as above)
-            client_data = {
-                "client_name": client_name, "client_address": client_address,
-                "ref_no": ref_no, "subject": subject
-            }
-            terms = {
-                "price_term": p_term, "gst_term": g_term, "delivery_term": d_term,
-                "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term,
-                "guarantee_term": guarantee
-            }
-
-            # Generate Logic
-            template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
-            if not os.path.exists(template_path):
-                 st.error(f"❌ Template not found: {template_path}")
+    # --- SAVE LOCALLY BUTTON ---
+    with col_btn2:
+        # Default save path logic
+        default_folder = os.path.join(BASE_DIR, "Generated_Quotes")
+        
+        # UI for Folder Path
+        save_folder = st.text_input("Save Folder Path", value=default_folder)
+        
+        if st.button("💾 Save to Specified Folder"):
+            if not client_name:
+                st.error("Please enter Client Name.")
             else:
-                docx_buffer = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                # Ensure folder exists
+                if not os.path.exists(save_folder):
+                    try:
+                        os.makedirs(save_folder)
+                    except Exception as e:
+                        st.error(f"Error creating folder: {e}")
+                        st.stop()
                 
-                full_save_path = os.path.join(save_folder, filename)
+                # Prepare data
+                client_data = {"client_name": client_name, "client_address": client_address, "ref_no": ref_no, "subject": subject}
+                terms = {"price_term": p_term, "gst_term": g_term, "delivery_term": d_term, "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term, "guarantee_term": guarantee}
+                template_path = os.path.join(TEMPLATE_DIR, FIRM_MAPPING[selected_firm])
                 
-                try:
-                    with open(full_save_path, "wb") as f:
-                        f.write(docx_buffer.getbuffer())
-                    st.success(f"✅ Successfully saved to: {full_save_path}")
-                except Exception as e:
-                    st.error(f"❌ Error saving file: {e}")
+                if not os.path.exists(template_path):
+                     st.error(f"❌ Template not found.")
+                else:
+                    docx_file = fill_template_docx(template_path, client_data, st.session_state['cart'], terms, visible_cols)
+                    
+                    # Create Filename
+                    safe_client = re.sub(r'[^\w\-_\. ]', '_', client_name)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"{selected_firm.replace(' ','_')}_{safe_client}_{timestamp}.docx"
+                    full_path = os.path.join(save_folder, filename)
+                    
+                    # Write to Disk
+                    try:
+                        with open(full_path, "wb") as f:
+                            f.write(docx_file.getbuffer())
+                        st.success(f"✅ Saved successfully to:\n\n`{full_path}`")
+                    except Exception as e:
+                        st.error(f"Error saving file: {e}")
