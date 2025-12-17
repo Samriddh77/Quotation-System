@@ -7,7 +7,6 @@ from io import BytesIO
 
 try:
     from docx import Document
-    from docx.shared import Pt, Cm, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -111,9 +110,20 @@ def format_qty(qty, uom):
     return f"{qty:,.2f}"
 
 # --- WORD GENERATOR ---
-def replace_text_in_paragraph(paragraph, key, value):
-    if key in paragraph.text:
-        paragraph.text = paragraph.text.replace(key, value)
+def safe_replace_text(doc, replacements):
+    for paragraph in doc.paragraphs:
+        for key, value in replacements.items():
+            if key in paragraph.text:
+                for run in paragraph.runs:
+                    if key in run.text: run.text = run.text.replace(key, value)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for key, value in replacements.items():
+                        if key in paragraph.text:
+                            for run in paragraph.runs:
+                                if key in run.text: run.text = run.text.replace(key, value)
 
 def set_table_borders(table):
     tbl = table._tbl
@@ -141,21 +151,6 @@ def set_table_borders(table):
         node.set(qn("w:type"), "dxa")
         tblCellMar.append(node)
 
-def safe_replace_text(doc, replacements):
-    for paragraph in doc.paragraphs:
-        for key, value in replacements.items():
-            if key in paragraph.text:
-                for run in paragraph.runs:
-                    if key in run.text: run.text = run.text.replace(key, value)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    for key, value in replacements.items():
-                        if key in paragraph.text:
-                            for run in paragraph.runs:
-                                if key in run.text: run.text = run.text.replace(key, value)
-
 def fill_template_docx(template_path, client_data, cart_items, terms, visible_cols):
     doc = Document(template_path)
     
@@ -172,7 +167,7 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{PAYMENT_TERM}}': str(terms.get('payment_term', '')),
         '{{VALIDITY_TERM}}': str(terms.get('validity_term', '')),
         '{{GUARANTEE_TERM}}': str(terms.get('guarantee_term', '')),
-        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')), # handle typo fallback
+        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
     }
 
     # Replace in Paragraphs & Tables
@@ -266,7 +261,6 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
 # --- DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
-    # Use Dynamic Path for Data Directory
     if not os.path.exists(DATA_DIR):
         return pd.DataFrame(), [f"❌ Data folder not found at: {DATA_DIR}"]
 
@@ -288,7 +282,7 @@ def load_data_from_files():
                     df = pd.read_excel(xls, sheet)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # 1. Identify Columns
+                    # Identify Columns
                     name_col = next((c for c in df.columns if "Item Description" == c), None)
                     price_col = next((c for c in df.columns if "List Price" == c), None)
                     disc_col = next((c for c in df.columns if "Standard Discount" == c), None)
@@ -300,13 +294,11 @@ def load_data_from_files():
                         clean_df['Description'] = df[name_col].astype(str)
                         clean_df['List Price'] = df[price_col].apply(clean_price_value)
                         
-                        # Load Discount
                         if disc_col:
                             clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
                         else:
                             clean_df['Standard Discount'] = 0.0
 
-                        # Load Coil Length
                         if coil_col:
                             clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len)
                         else:
@@ -315,7 +307,6 @@ def load_data_from_files():
                         clean_df['Main Category'] = main_cat
                         clean_df['Sub Category'] = sheet
                         
-                        # Load UOM
                         if uom_col:
                             clean_df['UOM'] = df[uom_col].astype(str)
                         else:
@@ -370,20 +361,17 @@ with st.sidebar:
             if mode == "Coils":
                 n = st.number_input("No. of Coils", 1, 500)
                 calc_qty = n * coil_len
-                # Keep unit as Mtr for price calc, but maybe note coils in cart
                 disp_unit = "Mtr" 
             else:
                 calc_qty = st.number_input("Total Meters", 1.0, 10000.0)
                 disp_unit = "Mtr"
         else:
-            # Standard Items (Glands, Cables without fixed coil len)
             if any(x in str(uom_raw).upper() for x in ["PC", "NO", "SET"]):
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1, 10000)
             else:
                 calc_qty = st.number_input(f"Qty ({uom_raw})", 1.0, 10000.0)
 
         c1, c2 = st.columns(2)
-        # Pre-fill discount with value from Excel
         disc = c1.number_input("Disc %", 0.0, 100.0, float(std_disc))
         make = c2.text_input("Make")
         
@@ -396,7 +384,7 @@ with st.sidebar:
                     'Description': sel_prod, 'Make': make,
                     'Qty': calc_qty, 'Display Unit': disp_unit,
                     'List Price': std_price, 'Discount': disc,
-                    'Sub Category': sel_sub # Ensure this is saved
+                    'Sub Category': sel_sub
                 })
                 st.success("Added")
     else:
@@ -444,7 +432,6 @@ else:
     # GENERATOR FORM
     st.subheader("2. Generate Official Quotation")
     
-    # Determine the index of the current firm to keep selectbox in sync
     firm_list = list(FIRM_MAPPING.keys())
     try:
         current_index = firm_list.index(st.session_state.get('firm_selector', "Electro World"))
@@ -486,9 +473,8 @@ else:
     val_term = tc6.text_input("Validity", key='val_term')
     guarantee = st.text_input("Guarantee", key='guar_term')
 
-    if st.button("🔄 Reset Terms to Defaults"):
-        update_defaults()
-        st.rerun()
+    # FIX: Use on_click to avoid StreamlitAPIException
+    st.button("🔄 Reset Terms to Defaults", on_click=update_defaults)
 
     if st.button("📥 Download Word Document", type="primary"):
         if not client_name:
