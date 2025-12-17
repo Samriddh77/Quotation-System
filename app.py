@@ -2,6 +2,18 @@ import streamlit as st
 import pandas as pd
 import os
 import re
+from datetime import datetime
+from io import BytesIO
+
+# Try importing python-docx (Handle error if not installed)
+try:
+    from docx import Document
+    from docx.shared import Pt, Inches, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+except ImportError:
+    st.error("❌ Library 'python-docx' is missing. Please run: pip install python-docx")
+    st.stop()
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Quotation Generator", layout="wide")
@@ -29,7 +41,149 @@ def detect_uom(sheet_name, price_col_name):
     if "GLAND" in s_up or "HMI" in s_up or "COSMOS" in s_up: return "Pc"
     return "Mtr" 
 
-# --- 2. DATA LOADER ---
+# --- 2. WORD GENERATOR FUNCTION ---
+def create_docx(client_data, cart_items, terms):
+    doc = Document()
+    
+    # Styles
+    style = doc.styles['Normal']
+    style.font.name = 'Calibri'
+    style.font.size = Pt(11)
+
+    # --- HEADER SECTION ---
+    # Ref and Date
+    header_table = doc.add_table(rows=1, cols=2)
+    header_table.autofit = True
+    header_table.width = Inches(7.5)
+    
+    c1 = header_table.cell(0, 0)
+    c1.text = f"Our Ref: {client_data['ref_no']}"
+    
+    c2 = header_table.cell(0, 1)
+    c2.text = f"Date: {datetime.now().strftime('%d-%b-%Y')}"
+    c2.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    doc.add_paragraph() # Spacer
+
+    # To Address
+    p = doc.add_paragraph()
+    p.add_run("To,\n").bold = True
+    p.add_run(client_data['client_name'] + "\n")
+    p.add_run(client_data['client_address'])
+    
+    doc.add_paragraph()
+
+    # Subject
+    p = doc.add_paragraph()
+    runner = p.add_run(f"Sub: {client_data['subject']}")
+    runner.bold = True
+    runner.underline = True
+
+    # Salutation
+    doc.add_paragraph("Sirs,")
+    doc.add_paragraph("We acknowledge with thanks the receipt of your above enquiry and are pleased to quote as under:-")
+
+    # --- TERMS & CONDITIONS SECTION ---
+    doc.add_paragraph().add_run("ANNEXURE I : PRICE SCHEDULE").bold = True
+    
+    p = doc.add_paragraph("Other Terms & Conditions are as under:")
+    
+    # Terms Table (Invisible borders for alignment) or List
+    # Using list format as per your doc
+    terms_list = [
+        ("Price", terms['price_term']),
+        ("GST", terms['gst_term']),
+        ("Delivery", terms['delivery_term']),
+        ("Freight", terms['freight_term']),
+        ("Payment", terms['payment_term']),
+        ("Validity", terms['validity_term']),
+        ("Guarantee", terms['guarantee_term'])
+    ]
+
+    table_terms = doc.add_table(rows=len(terms_list), cols=2)
+    table_terms.autofit = False
+    table_terms.columns[0].width = Inches(1.5)
+    table_terms.columns[1].width = Inches(5.0)
+    
+    for i, (k, v) in enumerate(terms_list):
+        table_terms.cell(i, 0).text = f"{k} :"
+        table_terms.cell(i, 1).text = v
+
+    doc.add_paragraph()
+    
+    # --- CLOSING ---
+    p = doc.add_paragraph()
+    p.add_run("Thanking You\nYours Faithfully\n")
+    p.add_run("For Electro World").bold = True
+    
+    doc.add_page_break()
+
+    # --- ANNEXURE I (THE TABLE) ---
+    h = doc.add_paragraph()
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    h.add_run("ANNEXURE I: PRICE SCHEDULE").bold = True
+    
+    # Determine columns
+    headers = ["S.No.", "Item Description", "Qty", "Unit", "Rate", "Amount", "Remark"]
+    
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.style = 'Table Grid'
+    table.autofit = False
+    
+    # Set Column Widths (Approximation)
+    widths = [Cm(1.2), Cm(6.0), Cm(2.0), Cm(1.5), Cm(2.5), Cm(3.0), Cm(3.0)]
+    for i, width in enumerate(widths):
+        table.columns[i].width = width
+
+    # Write Headers
+    hdr_cells = table.rows[0].cells
+    for i, h_text in enumerate(headers):
+        hdr_cells[i].text = h_text
+        hdr_cells[i].paragraphs[0].runs[0].bold = True
+        hdr_cells[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Write Rows
+    total_amt = 0
+    for i, item in enumerate(cart_items):
+        row_cells = table.add_row().cells
+        
+        # Calculations based on Terms (GST Inclusive vs Extra)
+        # Assuming app data is always Base Price. 
+        # Word doc "Rate" usually implies the Unit Net Rate.
+        
+        lp = item['List Price']
+        disc = item['Discount']
+        qty = item['Qty']
+        
+        net_rate = lp * (1 - disc/100)
+        line_total = net_rate * qty
+        total_amt += line_total
+        
+        desc = item['Description']
+        if item.get('Make'): desc += f" ({item['Make']})"
+        
+        row_cells[0].text = str(i+1)
+        row_cells[1].text = desc
+        row_cells[2].text = f"{qty:,.2f}" if isinstance(qty, float) else str(qty)
+        row_cells[3].text = item['Display Unit'].split()[0] # Just "Mtr" not "Mtr (5 Coils)"
+        row_cells[4].text = f"{net_rate:,.2f}"
+        row_cells[5].text = f"{line_total:,.2f}"
+        row_cells[6].text = item.get('Remark', '')
+
+    # Total Row
+    row_cells = table.add_row().cells
+    row_cells[1].text = "Total (Excl. GST)"
+    row_cells[5].text = f"{total_amt:,.2f}"
+    row_cells[1].paragraphs[0].runs[0].bold = True
+    row_cells[5].paragraphs[0].runs[0].bold = True
+
+    # Save to buffer
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+# --- 3. DATA LOADER ---
 @st.cache_data(show_spinner=True)
 def load_data_from_files():
     search_dirs = ['.', 'data'] 
@@ -48,292 +202,182 @@ def load_data_from_files():
     for file_path in excel_files:
         filename = os.path.basename(file_path)
         main_cat = os.path.splitext(filename)[0] 
-        
         try:
             xls = pd.ExcelFile(file_path)
             for sheet in xls.sheet_names:
                 try:
                     df_raw = pd.read_excel(xls, sheet, header=None, nrows=30)
                     header_idx = -1
-                    
                     for i, row in df_raw.iterrows():
                         r_str = " ".join([str(x).upper() for x in row if pd.notna(x)])
                         if (("LP" in r_str or "PRICE" in r_str or "RATE" in r_str) and 
-                            ("ITEM" in r_str or "DESC" in r_str or "SIZE" in r_str or "CODE" in r_str)):
+                            ("ITEM" in r_str or "DESC" in r_str)):
                             header_idx = i
                             break
-                    
                     if header_idx == -1: continue
 
                     df = pd.read_excel(xls, sheet, skiprows=header_idx)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    name_col = None
-                    price_col = None
-                    disc_col = None
-                    coil_col = None
+                    name_col = next((c for c in df.columns if any(k in c.upper() for k in ["DESC", "PARTICULARS", "ITEM"])), df.columns[0])
                     
-                    price_col = next((c for c in df.columns if "PER MTR" in c.upper() or "PER METER" in c.upper()), None)
+                    price_col = next((c for c in df.columns if "PER MTR" in c.upper()), None)
                     if not price_col:
-                        for k in ["LP", "LIST PRICE", "RATE", "PRICE", "MRP"]:
-                            match = next((c for c in df.columns if k in c.upper()), None)
-                            if match and "AMOUNT" not in match.upper(): price_col = match; break
-                    
-                    possible_names = ["ITEM DESCRIPTION", "DESCRIPTION", "PARTICULARS", "SIZE", "CODE", "ITEM"]
-                    for k in possible_names:
-                        match = next((c for c in df.columns if k in c.upper()), None)
-                        if match: name_col = match; break
-                    if not name_col: name_col = df.columns[0]
+                        price_col = next((c for c in df.columns if any(k in c.upper() for k in ["LP", "RATE", "PRICE"]) and "AMOUNT" not in c.upper()), None)
 
-                    disc_col = next((c for c in df.columns if "DISC" in c.upper() or "OFF" in c.upper()), None)
-                    coil_col = next((c for c in df.columns if "COIL" in c.upper() and ("LEN" in c.upper() or "MTR" in c.upper()) and "QTY" not in c.upper()), None)
+                    disc_col = next((c for c in df.columns if "DISC" in c.upper()), None)
+                    coil_col = next((c for c in df.columns if "COIL" in c.upper() and ("LEN" in c.upper() or "MTR" in c.upper())), None)
 
                     if price_col:
                         clean_df = pd.DataFrame()
                         clean_df['Description'] = df[name_col].astype(str)
                         clean_df['List Price'] = df[price_col].apply(clean_price_value)
-                        
-                        if disc_col: clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
-                        else: clean_df['Standard Discount'] = 0
-                        
-                        if coil_col: clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len)
-                        else: clean_df['Coil Length'] = 0.0
-
+                        clean_df['Standard Discount'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0) if disc_col else 0
+                        clean_df['Coil Length'] = df[coil_col].apply(clean_coil_len) if coil_col else 0.0
                         clean_df['Main Category'] = main_cat
                         clean_df['Sub Category'] = sheet
                         
                         if "UOM" in [c.upper() for c in df.columns]:
-                            uom_c = next(c for c in df.columns if "UOM" in c.upper())
-                            clean_df['UOM'] = df[uom_c].astype(str)
+                            clean_df['UOM'] = df[next(c for c in df.columns if "UOM" in c.upper())].astype(str)
                         else:
                             clean_df['UOM'] = detect_uom(sheet, price_col)
 
                         clean_df = clean_df[clean_df['List Price'] > 0]
-                        clean_df = clean_df[clean_df['Description'] != 'nan']
-                        
                         all_dfs.append(clean_df)
                         logs.append(f"✅ Loaded {main_cat} -> {sheet}")
                 except: pass
-
-        except Exception as e: logs.append(f"❌ Error {filename}: {e}")
+        except: pass
 
     if not all_dfs: return pd.DataFrame(), logs
     return pd.concat(all_dfs, ignore_index=True), logs
 
-# --- 3. APP UI ---
+# --- 4. UI START ---
 catalog, logs = load_data_from_files()
-
 if 'cart' not in st.session_state: st.session_state['cart'] = []
 
 # SIDEBAR
 with st.sidebar:
     st.title("🔧 Config")
-    if st.button("🔄 Refresh Data"):
-        st.cache_data.clear()
-        st.rerun()
-    
-    with st.expander("System Logs"):
+    if st.button("🔄 Refresh Data"): st.cache_data.clear(); st.rerun()
+    with st.expander("Logs"):
         for l in logs: st.write(l)
 
     st.header("1. Add Item")
-    
     if not catalog.empty:
-        main_cats = sorted(catalog['Main Category'].unique())
-        sel_main = st.selectbox("1. Category", main_cats)
+        cats = sorted(catalog['Main Category'].unique())
+        sel_cat = st.selectbox("Category", cats)
+        sub_cats = sorted(catalog[catalog['Main Category'] == sel_cat]['Sub Category'].unique())
+        sel_sub = st.selectbox("Sub Category", sub_cats)
         
-        subset_main = catalog[catalog['Main Category'] == sel_main]
-        sub_cats = sorted(subset_main['Sub Category'].unique())
-        sel_sub = st.selectbox("2. Type/Brand", sub_cats)
+        subset = catalog[(catalog['Main Category'] == sel_cat) & (catalog['Sub Category'] == sel_sub)]
+        prods = sorted(subset['Description'].unique())
+        sel_prod = st.selectbox("Product", prods)
         
-        subset_final = subset_main[subset_main['Sub Category'] == sel_sub]
-        prods = sorted(subset_final['Description'].unique())
-        sel_prod = st.selectbox("3. Product", prods)
-        
-        row = subset_final[subset_final['Description'] == sel_prod].iloc[0]
-        std_price = float(row['List Price'])
-        std_disc = float(row['Standard Discount'])
+        row = subset[subset['Description'] == sel_prod].iloc[0]
+        std_price = row['List Price']
+        std_disc = row['Standard Discount']
         uom = row['UOM']
-        coil_len = float(row['Coil Length'])
+        coil = row['Coil Length']
         
-        st.info(f"Rate: ₹{std_price:,.2f} / {uom}")
+        st.info(f"Price: {std_price} / {uom}")
         
         calc_qty = 0
         disp_unit = uom
-        
-        if coil_len > 0 and "M" in uom.upper():
-            st.caption(f"Standard Coil: {int(coil_len)} Mtr")
-            mode = st.radio("Input:", ["Coils", "Meters"], horizontal=True, label_visibility="collapsed")
-            
+        if coil > 0 and "M" in uom.upper():
+            mode = st.radio("Input", ["Coils", "Meters"], horizontal=True)
             if mode == "Coils":
-                q_in = st.number_input("No. of Coils", 1, 500, 1)
-                calc_qty = q_in * coil_len
-                st.write(f"= **{calc_qty} Mtr**")
-                disp_unit = f"{uom} ({q_in} Coils)"
+                n = st.number_input("Coils", 1, 500)
+                calc_qty = n * coil
+                disp_unit = f"Mtr ({n} Coils)"
             else:
-                q_in = st.number_input("Total Meters", 1, 10000, 100)
-                calc_qty = q_in
-                st.caption(f"Approx {q_in/coil_len:.1f} Coils")
-                disp_unit = uom
+                n = st.number_input("Meters", 1, 10000)
+                calc_qty = n
         else:
-            q_in = st.number_input(f"Qty ({uom})", 1, 10000, 1)
-            calc_qty = q_in
-            disp_unit = uom
-            
+            calc_qty = st.number_input(f"Qty ({uom})", 1, 10000)
+
         c1, c2 = st.columns(2)
         disc = c1.number_input("Disc %", 0.0, 100.0, std_disc)
-        make = c2.text_input("Make", value="", placeholder="Brand")
+        make = c2.text_input("Make")
+        remark = st.text_input("Remark")
         
-        # --- NEW REMARK FIELD ---
-        remark = st.text_input("Remark", value="", placeholder="e.g. Urgent / Red Color")
-        
-        if st.button("Add Item", type="primary"):
+        if st.button("Add"):
             st.session_state['cart'].append({
-                'Main Category': sel_main,
-                'Sub Category': sel_sub,
-                'Description': sel_prod,
-                'Make': make,
-                'Remark': remark, # <--- Saved here
-                'Qty': calc_qty,
-                'Display Unit': disp_unit,
-                'List Price': std_price,
-                'Discount': disc,
-                'GST Rate': 18.0
+                'Main Category': sel_cat, 'Sub Category': sel_sub,
+                'Description': sel_prod, 'Make': make, 'Remark': remark,
+                'Qty': calc_qty, 'Display Unit': disp_unit,
+                'List Price': std_price, 'Discount': disc, 'GST Rate': 18.0
             })
             st.success("Added")
+            
+    if st.button("Clear Cart"): st.session_state['cart'] = []; st.rerun()
 
-    st.markdown("---")
-    st.header("2. Columns")
-    # Added "Remark" to available options
-    avail_cols = ["Make", "Remark", "Main Category", "Sub Category", "List Price", "Discount %", "Net Rate", "GST %", "GST Amount"]
-    def_cols = ["Make", "Remark", "List Price", "Discount %", "Net Rate", "GST Amount"]
-    
-    sel_cols = st.multiselect("Select Cols", avail_cols, default=def_cols)
-    
-    if st.button("🗑️ Clear Cart"):
-        st.session_state['cart'] = []
-        st.rerun()
-
-# --- MAIN PAGE ---
+# MAIN PAGE
 st.title("📄 Quotation System")
 
 if not st.session_state['cart']:
-    st.info("👈 Add items from the sidebar.")
+    st.info("Add items to start.")
 else:
-    # 1. REVIEW SECTION
-    st.subheader("1. Review Items")
-    h1, h2, h3, h4, h5, h6 = st.columns([0.5, 4, 1.5, 1.5, 2, 0.5])
-    h1.write("#"); h2.write("Item"); h3.write("Make"); h4.write("Qty"); h5.write("Total"); 
-    st.divider()
-    
+    # --- TABLE PREVIEW ---
+    st.subheader("1. Item List")
+    data = []
+    grand_tot = 0
     for i, item in enumerate(st.session_state['cart']):
-        lp = item['List Price']
-        d = item['Discount']
-        q = item['Qty']
-        g = item.get('GST Rate', 18.0)
-        
-        net = lp * (1 - d/100)
-        gst_amt = net * (g/100)
-        tot = (net + gst_amt) * q
-        
-        c1, c2, c3, c4, c5, c6 = st.columns([0.5, 4, 1.5, 1.5, 2, 0.5])
-        c1.write(f"{i+1}")
-        c2.write(item['Description'])
-        c3.write(item.get('Make', '-'))
-        c4.write(f"{item['Display Unit']}") 
-        c5.write(f"₹ {tot:,.0f}")
-        if c6.button("🗑️", key=f"d{i}"):
-            st.session_state['cart'].pop(i)
-            st.rerun()
+        net = item['List Price'] * (1 - item['Discount']/100)
+        tot = (net * 1.18) * item['Qty']
+        grand_tot += tot
+        data.append({
+            "No": i+1, "Desc": item['Description'], "Make": item['Make'],
+            "Qty": item['Qty'], "Unit": item['Display Unit'],
+            "Price": item['List Price'], "Disc": item['Discount'],
+            "Total (Incl GST)": f"{tot:,.0f}"
+        })
+    st.dataframe(pd.DataFrame(data).set_index("No"))
+    st.write(f"**Est. Grand Total: ₹ {grand_tot:,.2f}**")
+    st.divider()
 
-    st.divider()
+    # --- WORD DOC GENERATOR FORM ---
+    st.subheader("2. Generate Official Quotation (.docx)")
     
-    # 2. FINAL TABLE GENERATION
-    st.subheader("2. Final Draft")
+    c1, c2 = st.columns(2)
+    with c1:
+        client_name = st.text_input("Client Name", placeholder="M/s Aneesh Commercial Pvt Ltd")
+        ref_no = st.text_input("Reference No", value="CABLE/EW-001")
+        subject = st.text_input("Subject", value="OFFER FOR CABLES / ELECTRICAL GOODS")
+    with c2:
+        client_address = st.text_area("Client Address", placeholder="Indore, MP")
     
-    final_data = []
+    st.markdown("#### Terms & Conditions")
+    tc1, tc2, tc3 = st.columns(3)
+    p_term = tc1.text_input("Price Term", value="Nett")
+    g_term = tc2.text_input("GST Term", value="Extra @ 18%")
+    d_term = tc3.text_input("Delivery", value="Ex Stock / 7 Days")
     
-    sum_taxable = 0
-    sum_gst = 0
-    sum_grand = 0
+    tc4, tc5, tc6 = st.columns(3)
+    f_term = tc4.text_input("Freight", value="Ex Our Godown (Local Cartage Extra)")
+    pay_term = tc5.text_input("Payment", value="100% Against Delivery")
+    val_term = tc6.text_input("Validity", value="7 Days")
     
-    for i, item in enumerate(st.session_state['cart']):
-        lp = item['List Price']
-        d = item['Discount']
-        q = item['Qty']
-        g = item.get('GST Rate', 18.0)
-        
-        unit_net = lp * (1 - d/100)
-        line_taxable = unit_net * q
-        unit_gst = unit_net * (g/100)
-        line_gst = unit_gst * q
-        line_total = line_taxable + line_gst
-        
-        sum_taxable += line_taxable
-        sum_gst += line_gst
-        sum_grand += line_total
-        
-        row = {
-            "No": str(i+1),
-            "Description": item['Description'],
-            "Make": item.get('Make', ''),
-            "Remark": item.get('Remark', ''), # <--- Added here
-            "Qty": f"{q:,.2f}",
-            "Unit": item['Display Unit'],
-            "Main Category": item['Main Category'],
-            "Sub Category": item['Sub Category'],
-            "List Price": f"{lp:,.2f}",
-            "Discount %": f"{d}%",
-            "Net Rate": f"{unit_net:,.2f}",
-            "GST %": f"{g}%",
-            "GST Amount": f"{line_gst:,.2f}",
-            "Total": f"{line_total:,.2f}"
-        }
-        final_data.append(row)
-        
-    # Spacer Row
-    final_data.append({"Description": "", "Total": ""}) 
-    
-    # Summary Rows
-    final_data.append({
-        "No": "", "Description": "TOTAL (BEFORE GST)", 
-        "Total": f"₹ {sum_taxable:,.2f}"
-    })
-    final_data.append({
-        "No": "", "Description": "TOTAL GST AMOUNT", 
-        "Total": f"₹ {sum_gst:,.2f}"
-    })
-    final_data.append({
-        "No": "", "Description": "GRAND TOTAL (INCL. GST)", 
-        "Total": f"₹ {sum_grand:,.2f}"
-    })
-        
-    df_out = pd.DataFrame(final_data)
-    
-    # Build Columns
-    show_cols = ["No", "Description"]
-    
-    # Logic to insert Make and Remark if selected
-    if "Make" in sel_cols: show_cols.append("Make")
-    if "Remark" in sel_cols: show_cols.append("Remark")
-    
-    show_cols += ["Qty", "Unit"]
-    
-    for c in sel_cols:
-        if c not in show_cols: show_cols.append(c)
-    
-    if "Total" not in show_cols: show_cols.append("Total")
-    
-    # Fill NaN
-    for c in show_cols: 
-        if c not in df_out.columns: df_out[c] = ""
-        
-    st.table(df_out[show_cols].set_index("No"))
-    
-    st.markdown("""
-    <button onclick="window.print()" style="
-        background-color: #4CAF50; color: white; 
-        padding: 12px 28px; border: none; border-radius: 5px; 
-        font-size: 16px; cursor: pointer;">
-        🖨️ Print / Save PDF
-    </button>
-    """, unsafe_allow_html=True)
+    guarantee = st.text_input("Guarantee", value="12 months from commissioning or 18 months from dispatch")
+
+    if st.button("📥 Download Word Document"):
+        if not client_name:
+            st.error("Please enter Client Name.")
+        else:
+            client_data = {
+                "client_name": client_name, "client_address": client_address,
+                "ref_no": ref_no, "subject": subject
+            }
+            terms = {
+                "price_term": p_term, "gst_term": g_term, "delivery_term": d_term,
+                "freight_term": f_term, "payment_term": pay_term, "validity_term": val_term,
+                "guarantee_term": guarantee
+            }
+            
+            docx_file = create_docx(client_data, st.session_state['cart'], terms)
+            
+            st.download_button(
+                label="Click to Download .docx",
+                data=docx_file,
+                file_name=f"Quotation_{client_name[:10]}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
