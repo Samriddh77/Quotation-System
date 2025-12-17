@@ -19,8 +19,8 @@ st.set_page_config(page_title="Quotation Generator", layout="wide")
 
 # 1. FILE MAPPING
 FIRM_MAPPING = {
-    "Electro World": "C:\Users\ASUSS\Desktop\quotation-system\templates\Electro_Template.docx",
-    "Abhinav Enterprises": "C:\Users\ASUSS\Desktop\quotation-system\templates\Abhinav_Template.docx",
+    "Electro World": "C:\\Users\\ASUSS\\Desktop\\quotation-system\\templates\\Electro_Template.docx",
+    "Abhinav Enterprises": "C:\\Users\\ASUSS\\Desktop\\quotation-system\\templates\\Abhinav_Template.docx",
     "Shree Creative Marketing": "Shree_Template.docx"
 }
 
