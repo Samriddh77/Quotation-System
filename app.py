@@ -7,7 +7,7 @@ from io import BytesIO
 
 try:
     from docx import Document
-    from docx.shared import Pt, Cm, RGBColor
+    from docx.shared import Pt, Cm, Inches, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -26,8 +26,7 @@ FIRM_MAPPING = {
     "Shree Creative Marketing": "Shree_Template.docx"
 }
 
-# --- 2. PRESERVE ORIGINAL TEMPLATES ---
-# We only create folders. We DO NOT generate dummy files if you have uploaded your own.
+# --- 2. FOLDER SETUP ---
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
 
@@ -83,9 +82,11 @@ def detect_uom(sheet_name, price_col_name):
 
 # --- WORD GENERATOR UTILS ---
 def set_table_borders(table):
-    """ Force proper grid borders using XML """
+    """ Force proper grid borders and CELL PADDING using XML """
     tbl = table._tbl
     tblPr = tbl.tblPr
+    
+    # 1. Borders
     tblBorders = tblPr.first_child_found_in("w:tblBorders")
     if tblBorders is None:
         tblBorders = OxmlElement('w:tblBorders')
@@ -94,25 +95,38 @@ def set_table_borders(table):
     for border_name in ["top", "left", "bottom", "right", "insideH", "insideV"]:
         border = OxmlElement(f'w:{border_name}')
         border.set(qn('w:val'), 'single')
-        border.set(qn('w:sz'), '4')
+        border.set(qn('w:sz'), '4') # 4 = 1/2 pt
         border.set(qn('w:space'), '0')
         border.set(qn('w:color'), '000000')
         tblBorders.append(border)
 
+    # 2. Cell Margins (Padding) - Ensures text doesn't touch lines
+    tblCellMar = tblPr.first_child_found_in("w:tblCellMar")
+    if tblCellMar is None:
+        tblCellMar = OxmlElement('w:tblCellMar')
+        tblPr.append(tblCellMar)
+
+    for side in ["top", "bottom"]:
+        node = OxmlElement(f"w:{side}")
+        node.set(qn("w:w"), "60") # Approx 0.04 inches
+        node.set(qn("w:type"), "dxa")
+        tblCellMar.append(node)
+        
+    for side in ["left", "right"]:
+        node = OxmlElement(f"w:{side}")
+        node.set(qn("w:w"), "100") # Approx 0.07 inches
+        node.set(qn("w:type"), "dxa")
+        tblCellMar.append(node)
+
 def safe_replace_text(doc, replacements):
-    """ Replaces text while PRESERVING formatting (Bold, Fonts, Colors) """
+    """ Replaces text while trying to preserve formatting """
     for paragraph in doc.paragraphs:
         for key, value in replacements.items():
             if key in paragraph.text:
-                # We do a naive replace first to catch simple cases, 
-                # but for complex formatting we should iterate runs if needed.
-                # However, python-docx simple replace often kills style.
-                # This approach tries to preserve the run structure.
                 for run in paragraph.runs:
                     if key in run.text:
                         run.text = run.text.replace(key, value)
     
-    # Also replace in tables (Header section etc)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -139,13 +153,13 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
         '{{PAYMENT_TERM}}': str(terms.get('payment_term', '')),
         '{{VALIDITY_TERM}}': str(terms.get('validity_term', '')),
         '{{GUARANTEE_TERM}}': str(terms.get('guarantee_term', '')),
-        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')), # Handle typo in template
+        '{{GURANTEE_TERM}}': str(terms.get('guarantee_term', '')),
     }
 
-    # 1. Perform Text Replacements (Preserving Style)
+    # 1. Perform Text Replacements
     safe_replace_text(doc, replacements)
 
-    # 2. Find Table Placeholder
+    # 2. Insert Table
     target_paragraph = None
     for paragraph in doc.paragraphs:
         if '{{TABLE_HERE}}' in paragraph.text:
@@ -153,35 +167,46 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             break
             
     if target_paragraph:
-        target_paragraph.text = "" # Clear the placeholder tag
+        target_paragraph.text = "" 
         
-        # Define Column Config
-        col_defs = {
-            "S.No.": {"width": Cm(1.2), "align": WD_ALIGN_PARAGRAPH.CENTER},
-            "Sub Category": {"width": Cm(3.0), "align": WD_ALIGN_PARAGRAPH.LEFT},
-            "Item Description": {"width": Cm(6.5), "align": WD_ALIGN_PARAGRAPH.LEFT},
-            "Make": {"width": Cm(2.5), "align": WD_ALIGN_PARAGRAPH.CENTER},
-            "Qty": {"width": Cm(1.5), "align": WD_ALIGN_PARAGRAPH.RIGHT},
-            "Unit": {"width": Cm(1.5), "align": WD_ALIGN_PARAGRAPH.CENTER},
-            "Rate": {"width": Cm(2.5), "align": WD_ALIGN_PARAGRAPH.RIGHT},
-            "Amount": {"width": Cm(3.0), "align": WD_ALIGN_PARAGRAPH.RIGHT}
+        # --- COLUMN WIDTH RATIOS (Total ~100) ---
+        # We define proportional widths so it fills the page perfectly
+        col_ratios = {
+            "S.No.": 5,
+            "Sub Category": 12,
+            "Item Description": 35,
+            "Make": 10,
+            "Qty": 8,
+            "Unit": 8,
+            "Rate": 10,
+            "Amount": 12
         }
         
-        active_headers = [h for h in visible_cols if h in col_defs]
+        active_headers = [h for h in visible_cols if h in col_ratios]
         
-        # Create Table
+        # Add table
         table = doc.add_table(rows=1, cols=len(active_headers))
-        table.autofit = False
+        
+        # --- AUTO-FIT LOGIC ---
+        table.autofit = False 
+        table.allow_autofit = False
+        
+        # Calculate total width of page (approx 6.5 inches for A4 with standard margins)
+        # We set table width to 100% (5000 pct) using OXML
+        tblPr = table._tbl.tblPr
+        tblW = OxmlElement('w:tblW')
+        tblW.set(qn('w:w'), '5000') # 5000 = 100% width
+        tblW.set(qn('w:type'), 'pct')
+        tblPr.append(tblW)
+        
         set_table_borders(table)
         
         # Header Row
         for i, header in enumerate(active_headers):
             cell = table.rows[0].cells[i]
             cell.text = header
-            cell.width = col_defs[header]["width"]
             p = cell.paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            # Make Bold
             if p.runs: p.runs[0].bold = True
             else: p.add_run(header).bold = True
 
@@ -214,8 +239,14 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             for idx, header in enumerate(active_headers):
                 cell = row_cells[idx]
                 cell.text = data_map.get(header, "")
-                cell.width = col_defs[header]["width"]
-                cell.paragraphs[0].alignment = col_defs[header]["align"]
+                
+                # Alignments
+                if header in ["Qty", "Rate", "Amount"]:
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                elif header in ["S.No.", "Unit", "Make"]:
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
         # Grand Total Row
         if "Amount" in active_headers:
@@ -223,14 +254,12 @@ def fill_template_docx(template_path, client_data, cart_items, terms, visible_co
             amt_idx = active_headers.index("Amount")
             label_idx = amt_idx - 1 if amt_idx > 0 else 0
             
-            # Label
             label_cell = row[label_idx]
             label_cell.text = "Grand Total (Excl. GST)"
             label_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
             if label_cell.paragraphs[0].runs: label_cell.paragraphs[0].runs[0].bold = True
             else: label_cell.paragraphs[0].add_run("Grand Total (Excl. GST)").bold = True
 
-            # Value
             val_cell = row[amt_idx]
             val_cell.text = f"{total_amt:,.2f}"
             val_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
